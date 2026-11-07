@@ -1,0 +1,10 @@
+node_modules
+storage
+.env
+.deploy-env.json
+credentials.md
+deploy-sync.js
+Dockerfile
+server.js
+cloner.js
+*.log

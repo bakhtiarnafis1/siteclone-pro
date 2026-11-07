@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en" class="dark scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SiteClone — Download any website as clean, offline-ready code</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['Geist Mono', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            ink: {
+              950: '#05060b', // page background
+              900: '#0a0c16', // card surface
+              800: '#10142a', // elevated surface
+              700: '#1a2040', // hover / borders on blue
+            },
+            accent: {
+              DEFAULT: '#2f5bff',
+              soft: '#7c97ff',
+            },
+            mint: '#9befc9',
+            body: '#a4aabd',
+            dim: '#6b7187',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { background: #05060b; -webkit-font-smoothing: antialiased; }
+
+    /* Soft blue glow behind the hero */
+    .hero-glow {
+      background: radial-gradient(60% 50% at 50% 0%, rgba(47, 91, 255, 0.22) 0%, rgba(13, 22, 56, 0.15) 45%, transparent 100%);
+    }
+
+    /* Standard card: dark surface, hairline border, faint blue corner light */
+    .card {
+      background: radial-gradient(120% 120% at 100% 0%, rgba(47, 91, 255, 0.08) 0%, transparent 45%), #0a0c16;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    /* Main clone card: slightly brighter, with blue aura */
+    .clone-card {
+      background: linear-gradient(180deg, #0f1326 0%, #0a0c16 100%);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      box-shadow: 0 30px 80px -20px rgba(47, 91, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .btn-primary {
+      background: linear-gradient(180deg, #4169ff 0%, #2f5bff 100%);
+      box-shadow: 0 6px 20px -4px rgba(47, 91, 255, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      transition: all .2s ease;
+    }
+    .btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+
+    .btn-ghost {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      transition: all .2s ease;
+    }
+    .btn-ghost:hover { background: rgba(255, 255, 255, 0.08); }
+
+    /* Segmented mode tabs */
+    .mode-tab { color: #a4aabd; transition: all .2s ease; }
+    .mode-tab:hover { color: #fff; }
+    .mode-tab.is-active {
+      background: #1a2040;
+      color: #fff;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 1px rgba(47, 91, 255, 0.45);
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      height: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.1);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #2f5bff; border: 2px solid #fff; cursor: pointer;
+      box-shadow: 0 0 10px rgba(47, 91, 255, 0.8);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #2f5bff; border: 2px solid #fff; cursor: pointer;
+    }
+    input[type="checkbox"] { accent-color: #2f5bff; }
+
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+  </style>
+</head>
+<body class="min-h-screen font-sans text-white antialiased selection:bg-accent selection:text-white overflow-x-hidden">
+
+  <!-- ============ NAVBAR ============ -->
+  <header class="fixed inset-x-0 top-0 z-50 border-b border-white/[0.06] bg-ink-950/80 backdrop-blur-md">
+    <div class="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
+      <a href="#" class="flex items-center gap-2.5">
+        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent shadow-[0_0_18px_rgba(47,91,255,0.55)]">
+          <i data-lucide="copy" class="h-4 w-4 text-white"></i>
+        </span>
+        <span class="text-sm font-semibold tracking-tight">SiteClone</span>
+      </a>
+
+      <nav class="hidden items-center gap-8 md:flex">
+        <a href="#how" class="text-sm text-body hover:text-white transition-colors">How it works</a>
+        <a href="#features" class="text-sm text-body hover:text-white transition-colors">Features</a>
+        <a href="#history-section" class="flex items-center gap-1.5 text-sm text-body hover:text-white transition-colors">
+          My downloads
+          <span id="nav-history-badge" class="rounded-full bg-accent/20 px-1.5 font-mono text-[10px] text-accent-soft">0</span>
+        </a>
+        <a href="#faq" class="text-sm text-body hover:text-white transition-colors">FAQ</a>
+      </nav>
+
+      <a href="#clone" class="btn-primary rounded-lg px-4 py-2 text-sm font-medium">Start cloning</a>
+    </div>
+  </header>
+
+  <main class="pt-16">
+
+    <!-- ============ HERO + CLONE CARD ============ -->
+    <section id="clone" class="relative px-5 pt-16 pb-24 md:pt-24">
+      <div class="hero-glow pointer-events-none absolute inset-x-0 top-0 -z-10 h-[600px]"></div>
+
+      <div class="mx-auto max-w-3xl text-center">
+        <span class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-ink-900/80 px-3 py-1 text-xs text-body">
+          <span class="h-1.5 w-1.5 rounded-full bg-mint"></span>
+          Free &amp; open-source · Up to 50 pages
+        </span>
+        <h1 class="mt-6 text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl">
+          Download any website<br class="hidden sm:block" />
+          <span class="text-accent-soft">as clean, working code.</span>
+        </h1>
+        <p class="mx-auto mt-5 max-w-xl text-base leading-relaxed text-body">
+          Paste a link. SiteClone opens it in a real browser, saves the HTML, CSS, JavaScript, fonts and images, and hands you a ZIP that works offline.
+        </p>
+      </div>
+
+      <!-- Clone card -->
+      <div class="clone-card mx-auto mt-12 max-w-2xl rounded-2xl p-5 sm:p-6">
+        <form id="clone-form" class="space-y-5">
+
+          <!-- Mode tabs -->
+          <div class="grid grid-cols-3 gap-1 rounded-xl bg-ink-950/70 p-1 border border-white/[0.06]">
+            <button type="button" data-mode="single" class="mode-tab is-active flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
+              <i data-lucide="file" class="h-4 w-4"></i> Single page
+            </button>
+            <button type="button" data-mode="full" class="mode-tab flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
+              <i data-lucide="files" class="h-4 w-4"></i> Full website
+            </button>
+            <button type="button" data-mode="auth" class="mode-tab flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
+              <i data-lucide="lock" class="h-4 w-4"></i> Behind login
+            </button>
+          </div>
+
+          <!-- URL + button -->
+          <div class="flex flex-col gap-2.5 sm:flex-row">
+            <div class="relative flex-1">
+              <i data-lucide="globe" class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-dim"></i>
+              <input
+                id="target-url"
+                type="url"
+                required
+                placeholder="https://example.com"
+                class="h-12 w-full rounded-xl border border-white/10 bg-ink-950 pl-10 pr-4 text-sm text-white placeholder:text-dim focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 transition"
+              />
+            </div>
+            <button id="submit-clone-btn" type="submit" class="btn-primary flex h-12 items-center justify-center gap-2 rounded-xl px-6 text-sm font-semibold">
+              <i data-lucide="download" class="h-4 w-4"></i>
+              <span id="submit-btn-text">Clone site</span>
+            </button>
+          </div>
+
+          <!-- Page limit (full / auth only) -->
+          <div id="page-limit-panel" class="hidden">
+            <div class="mb-2 flex items-center justify-between text-sm">
+              <label for="page-limit-slider" class="text-body">How many pages?</label>
+              <span class="font-mono text-white"><span id="page-limit-value">10</span> <span class="text-dim">/ 50</span></span>
+            </div>
+            <input id="page-limit-slider" type="range" min="1" max="50" value="10" class="w-full cursor-pointer" />
+          </div>
+
+          <!-- Cookies (auth only) -->
+          <div id="cookie-auth-panel" class="hidden">
+            <label for="cookie-json-input" class="mb-2 flex items-center justify-between text-sm">
+              <span class="text-body">Session cookies (JSON)</span>
+              <a href="#faq-login" class="text-xs text-accent-soft hover:underline">How do I get these?</a>
+            </label>
+            <textarea
+              id="cookie-json-input"
+              rows="3"
+              placeholder='[{"name":"session","value":"...","domain":".example.com","path":"/"}]'
+              class="w-full rounded-xl border border-white/10 bg-ink-950 p-3 font-mono text-xs text-white placeholder:text-dim focus:border-accent focus:outline-none"
+            ></textarea>
+            <p class="mt-1.5 text-xs text-dim">Used only for this download, then deleted.</p>
+          </div>
+
+          <!-- Advanced (collapsed by default) -->
+          <details class="group rounded-xl border border-white/[0.06] bg-ink-950/40">
+            <summary class="flex cursor-pointer items-center justify-between px-4 py-3 text-sm text-body hover:text-white">
+              <span class="flex items-center gap-2"><i data-lucide="settings-2" class="h-4 w-4"></i> Advanced settings</span>
+              <i data-lucide="chevron-down" class="h-4 w-4 transition-transform group-open:rotate-180"></i>
+            </summary>
+            <div class="space-y-4 border-t border-white/[0.06] px-4 py-4">
+              <div class="flex items-center justify-between">
+                <span class="text-sm text-body">Screen size</span>
+                <div class="inline-flex rounded-lg border border-white/10 bg-ink-950 p-0.5 text-xs">
+                  <button type="button" data-viewport="desktop" class="viewport-btn rounded-md bg-accent px-3 py-1 font-medium text-white">Desktop</button>
+                  <button type="button" data-viewport="mobile" class="viewport-btn rounded-md px-3 py-1 font-medium text-body hover:text-white">Mobile</button>
+                </div>
+              </div>
+              <div class="grid gap-2.5 sm:grid-cols-2">
+                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-autoscroll" type="checkbox" checked class="h-4 w-4" /> Scroll to load lazy images</label>
+                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-rewrite-links" type="checkbox" checked class="h-4 w-4" /> Make links work offline</label>
+                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-save-assets" type="checkbox" checked class="h-4 w-4" /> Include fonts &amp; images</label>
+                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-same-domain" type="checkbox" checked class="h-4 w-4" /> Stay on the same domain</label>
+              </div>
+            </div>
+          </details>
+        </form>
+
+        <!-- Progress (hidden until a job starts) -->
+        <div id="live-progress-panel" class="hidden mt-5 border-t border-white/[0.06] pt-5">
+          <div class="mb-3 flex items-center justify-between gap-4">
+            <div class="min-w-0">
+              <p id="progress-status-title" class="truncate text-sm font-medium text-white">Starting…</p>
+              <p id="progress-status-subtitle" class="truncate font-mono text-xs text-dim"></p>
+            </div>
+            <span id="stat-percent" class="font-mono text-sm text-mint">0%</span>
+          </div>
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
+            <div id="progress-bar-fill" class="h-full rounded-full bg-gradient-to-r from-accent to-accent-soft transition-all duration-300" style="width:0%"></div>
+          </div>
+          <div class="mt-3 flex gap-5 font-mono text-xs text-dim">
+            <span>Pages <strong id="stat-pages" class="font-medium text-white">0 / 1</strong></span>
+            <span>Files <strong id="stat-assets" class="font-medium text-white">0</strong></span>
+          </div>
+
+          <details class="mt-3">
+            <summary class="cursor-pointer text-xs text-dim hover:text-body">Show log</summary>
+            <div id="progress-log-box" class="mt-2 max-h-36 space-y-1 overflow-y-auto rounded-lg bg-ink-950 p-3 font-mono text-[11px] text-body"></div>
+          </details>
+
+          <div id="clone-complete-actions" class="hidden mt-4 flex flex-col items-center justify-between gap-3 rounded-xl border border-mint/25 bg-mint/[0.06] p-4 sm:flex-row">
+            <div class="flex items-center gap-2.5 text-sm text-white">
+              <i data-lucide="check-circle-2" class="h-5 w-5 text-mint"></i>
+              <span id="complete-summary-text">Your ZIP is ready.</span>
+            </div>
+            <div class="flex gap-2">
+              <button id="btn-live-preview" type="button" class="btn-ghost rounded-lg px-3.5 py-2 text-sm">Preview</button>
+              <a id="btn-download-zip" href="#" download class="btn-primary rounded-lg px-4 py-2 text-sm font-semibold">Download ZIP</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <p class="mt-5 text-center text-xs text-dim">
+        Try: <button type="button" data-sample="https://example.com" class="sample-url-btn text-body hover:text-white underline-offset-2 hover:underline">example.com</button>
+      </p>
+    </section>
+
+    <!-- ============ HOW IT WORKS ============ -->
+    <section id="how" class="px-5 py-24 border-t border-white/[0.05]">
+      <div class="mx-auto max-w-5xl">
+        <div class="mx-auto max-w-xl text-center">
+          <p class="text-xs font-medium uppercase tracking-widest text-accent-soft">How it works</p>
+          <h2 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Three steps. No setup.</h2>
+        </div>
+
+        <div class="mt-14 grid gap-4 md:grid-cols-3">
+          <div class="card rounded-2xl p-6">
+            <span class="font-mono text-xs text-accent-soft">01</span>
+            <h3 class="mt-4 text-base font-semibold">Paste a link</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Pick one page, a whole site (up to 50 pages), or pages you can only see after logging in.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <span class="font-mono text-xs text-accent-soft">02</span>
+            <h3 class="mt-4 text-base font-semibold">We capture it</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">A real browser loads each page, scrolls to the bottom, and saves everything it renders, including JavaScript-built content.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <span class="font-mono text-xs text-accent-soft">03</span>
+            <h3 class="mt-4 text-base font-semibold">Download the ZIP</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Links are rewritten to local files, so you can unzip it, open index.html, and it just works.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FEATURES ============ -->
+    <section id="features" class="px-5 py-24 border-t border-white/[0.05]">
+      <div class="mx-auto max-w-5xl">
+        <div class="mx-auto max-w-xl text-center">
+          <p class="text-xs font-medium uppercase tracking-widest text-accent-soft">Features</p>
+          <h2 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Built for modern websites</h2>
+          <p class="mt-4 text-body">Old downloaders break on React, Next.js and Framer sites. SiteClone doesn't.</p>
+        </div>
+
+        <div class="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div class="card rounded-2xl p-6">
+            <i data-lucide="monitor-play" class="h-5 w-5 text-accent-soft"></i>
+            <h3 class="mt-4 font-semibold">Real browser rendering</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Pages are captured after JavaScript runs, exactly as you see them.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <i data-lucide="layers" class="h-5 w-5 text-accent-soft"></i>
+            <h3 class="mt-4 font-semibold">Up to 50 pages</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Follows internal links automatically. Shared files are saved once.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <i data-lucide="wifi-off" class="h-5 w-5 text-accent-soft"></i>
+            <h3 class="mt-4 font-semibold">Works offline</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Every link and file path is rewritten to point to local copies.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <i data-lucide="lock-keyhole" class="h-5 w-5 text-accent-soft"></i>
+            <h3 class="mt-4 font-semibold">Pages behind a login</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Capture your own dashboards and admin panels using session cookies.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <i data-lucide="smartphone" class="h-5 w-5 text-accent-soft"></i>
+            <h3 class="mt-4 font-semibold">Desktop or mobile</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Capture the layout at desktop width or as it looks on a phone.</p>
+          </div>
+          <div class="card rounded-2xl p-6">
+            <i data-lucide="sparkles" class="h-5 w-5 text-accent-soft"></i>
+            <h3 class="mt-4 font-semibold">Ready for AI coding tools</h3>
+            <p class="mt-2 text-sm leading-relaxed text-body">Drop the folder into your project as a design reference for your AI assistant.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ WHAT'S IN THE ZIP ============ -->
+    <section class="px-5 py-24 border-t border-white/[0.05]">
+      <div class="mx-auto grid max-w-5xl items-center gap-12 md:grid-cols-2">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-widest text-accent-soft">The output</p>
+          <h2 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">A tidy folder, not a mess.</h2>
+          <p class="mt-4 leading-relaxed text-body">Each page becomes its own HTML file. Styles, scripts, fonts and images go into clearly named folders, so you can find what you need.</p>
+          <ul class="mt-6 space-y-3 text-sm">
+            <li class="flex items-center gap-3"><i data-lucide="check" class="h-4 w-4 text-mint"></i> Open index.html in any browser</li>
+            <li class="flex items-center gap-3"><i data-lucide="check" class="h-4 w-4 text-mint"></i> Real class names and CSS variables</li>
+            <li class="flex items-center gap-3"><i data-lucide="check" class="h-4 w-4 text-mint"></i> Original fonts and image quality</li>
+          </ul>
+        </div>
+
+        <!-- File tree mock -->
+        <div class="card rounded-2xl p-5">
+          <div class="mb-4 flex items-center justify-between border-b border-white/[0.06] pb-3">
+            <span class="flex items-center gap-2 text-sm font-medium"><i data-lucide="folder-archive" class="h-4 w-4 text-accent-soft"></i> example-com.zip</span>
+            <span class="font-mono text-xs text-dim">4.2 MB</span>
+          </div>
+          <div class="space-y-1.5 font-mono text-[13px] text-body">
+            <div class="flex items-center gap-2 text-white"><i data-lucide="file-code" class="h-4 w-4 text-accent-soft"></i> index.html</div>
+            <div class="flex items-center gap-2"><i data-lucide="file-code" class="h-4 w-4 text-dim"></i> about.html</div>
+            <div class="flex items-center gap-2"><i data-lucide="file-code" class="h-4 w-4 text-dim"></i> pricing.html</div>
+            <div class="flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-accent-soft"></i> assets/</div>
+            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-dim"></i> css/ <span class="ml-auto text-xs text-dim">6 files</span></div>
+            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-dim"></i> js/ <span class="ml-auto text-xs text-dim">11 files</span></div>
+            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-dim"></i> fonts/ <span class="ml-auto text-xs text-dim">4 files</span></div>
+            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-dim"></i> images/ <span class="ml-auto text-xs text-dim">38 files</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MY DOWNLOADS ============ -->
+    <section id="history-section" class="px-5 py-24 border-t border-white/[0.05]">
+      <div class="mx-auto max-w-3xl">
+        <div class="mb-8 flex items-end justify-between gap-4">
+          <div>
+            <h2 class="text-2xl font-semibold tracking-tight">My downloads</h2>
+            <p class="mt-1 text-sm text-body">Sites you've cloned, saved on this computer.</p>
+          </div>
+          <button id="refresh-history-btn" type="button" class="btn-ghost flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs text-body hover:text-white">
+            <i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i> Refresh
+          </button>
+        </div>
+        <div id="history-list-container" class="space-y-3"></div>
+      </div>
+    </section>
+
+    <!-- ============ FAQ ============ -->
+    <section id="faq" class="px-5 py-24 border-t border-white/[0.05]">
+      <div class="mx-auto max-w-2xl">
+        <h2 class="text-center text-3xl font-semibold tracking-tight">Questions</h2>
+        <div class="mt-10 space-y-3">
+          <details class="group card rounded-xl px-5 py-4">
+            <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
+              Can it download a site's backend code?
+              <i data-lucide="plus" class="h-4 w-4 text-body transition-transform group-open:rotate-45"></i>
+            </summary>
+            <p class="mt-3 text-sm leading-relaxed text-body">No. Server code and databases never leave the server. You get everything the browser receives: HTML, CSS, JavaScript, fonts and images.</p>
+          </details>
+          <details class="group card rounded-xl px-5 py-4">
+            <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
+              Does it work with React, Next.js or Framer sites?
+              <i data-lucide="plus" class="h-4 w-4 text-body transition-transform group-open:rotate-45"></i>
+            </summary>
+            <p class="mt-3 text-sm leading-relaxed text-body">Yes. Pages are opened in a real Chromium browser and captured after the JavaScript has finished rendering.</p>
+          </details>
+          <details id="faq-login" class="group card rounded-xl px-5 py-4">
+            <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
+              How do I capture pages behind a login?
+              <i data-lucide="plus" class="h-4 w-4 text-body transition-transform group-open:rotate-45"></i>
+            </summary>
+            <p class="mt-3 text-sm leading-relaxed text-body">Log in to the site in your own browser, export its cookies as JSON with the free Cookie-Editor extension, and paste them into the "Behind login" tab. Only do this for accounts you own or are allowed to use.</p>
+          </details>
+          <details class="group card rounded-xl px-5 py-4">
+            <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
+              Which sites am I allowed to clone?
+              <i data-lucide="plus" class="h-4 w-4 text-body transition-transform group-open:rotate-45"></i>
+            </summary>
+            <p class="mt-3 text-sm leading-relaxed text-body">Your own sites, sites you have permission for, and public pages for personal reference and learning. Don't republish other people's content or designs as your own.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CTA ============ -->
+    <section class="px-5 pb-24">
+      <div class="mx-auto max-w-5xl overflow-hidden rounded-3xl border border-accent/30 px-6 py-16 text-center"
+           style="background: radial-gradient(80% 120% at 50% 0%, rgba(47,91,255,0.28) 0%, rgba(13,22,56,0.6) 50%, #0a0c16 100%);">
+        <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Found a site you like?</h2>
+        <p class="mx-auto mt-3 max-w-md text-body">Paste the link and have it on your computer in under a minute.</p>
+        <a href="#clone" class="btn-primary mt-8 inline-flex rounded-lg px-6 py-3 text-sm font-semibold">Clone a website</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="border-t border-white/[0.06] px-5 py-8">
+    <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-xs text-dim sm:flex-row">
+      <span class="flex items-center gap-2">
+        <span class="flex h-5 w-5 items-center justify-center rounded bg-accent"><i data-lucide="copy" class="h-3 w-3 text-white"></i></span>
+        SiteClone MVP
+      </span>
+      <span>Built with Node.js, Playwright, Cheerio &amp; Archiver</span>
+    </div>
+  </footer>
+
+  <script src="/config.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

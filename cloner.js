@@ -231,16 +231,45 @@ function parseUserCookies(cookieInput, targetUrl) {
  */
 async function autoScrollPage(page) {
   try {
+    const metrics = await page
+      .evaluate(() => ({
+        totalHeight: Math.max(
+          document.body ? document.body.scrollHeight : 0,
+          document.documentElement ? document.documentElement.scrollHeight : 0
+        ),
+        viewHeight: window.innerHeight || 900,
+      }))
+      .catch(() => ({ totalHeight: 0, viewHeight: 900 }));
+
+    // Adaptive timeout: 0ms for single-screen 100vh pages, up to 10s for tall multi-section pages on slow CPUs
+    const maxTimeoutMs =
+      metrics.totalHeight <= metrics.viewHeight * 1.15
+        ? 1200
+        : Math.min(Math.max(Math.ceil(metrics.totalHeight / 900) * 900, 4500), 11000);
+
     await Promise.race([
       page.evaluate(async () => {
-        // Force lazy images and iframes to eager load
-        document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]').forEach((el) => {
-          el.setAttribute('loading', 'eager');
+        // Force lazy images, videos, and iframes to eager load
+        document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"], video[preload="none"]').forEach((el) => {
+          if (el.tagName === 'VIDEO') el.setAttribute('preload', 'metadata');
+          else el.setAttribute('loading', 'eager');
         });
-        document.querySelectorAll('img[data-src], img[data-lazy-src]').forEach((img) => {
-          const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
-          if (dataSrc && !img.getAttribute('src')) {
-            img.setAttribute('src', dataSrc);
+        document.querySelectorAll('img[data-src], img[data-lazy-src], source[data-src]').forEach((el) => {
+          const dataSrc = el.getAttribute('data-src') || el.getAttribute('data-lazy-src');
+          if (dataSrc && !el.getAttribute('src')) {
+            el.setAttribute('src', dataSrc);
+          }
+        });
+        document.querySelectorAll('source[data-srcset], img[data-srcset]').forEach((el) => {
+          const dataSrcset = el.getAttribute('data-srcset');
+          if (dataSrcset && !el.getAttribute('srcset')) {
+            el.setAttribute('srcset', dataSrcset);
+          }
+        });
+        document.querySelectorAll('[data-bg], [data-background-image]').forEach((el) => {
+          const bg = el.getAttribute('data-bg') || el.getAttribute('data-background-image');
+          if (bg && (!el.style.backgroundImage || el.style.backgroundImage === 'none')) {
+            el.style.backgroundImage = `url("${bg}")`;
           }
         });
 
@@ -257,29 +286,37 @@ async function autoScrollPage(page) {
 
         await new Promise((resolve) => {
           let currentScroll = 0;
-          const step = 650;
-          const maxScrollHeight = Math.min(totalHeight || 10000, 15000);
+          const step = 520;
+          const maxScrollHeight = Math.min(
+            Math.max(totalHeight, document.documentElement.scrollHeight || 0),
+            25000
+          );
 
-          // Scroll down rapidly so IntersectionObservers trigger on every section
+          // Scroll down steadily so every IntersectionObserver / whileInView triggers all the way to the footer
           const downTimer = setInterval(() => {
             window.scrollBy(0, step);
             currentScroll += step;
-            if (currentScroll >= maxScrollHeight) {
+            // Re-read scrollHeight in case lazy sections expanded the page
+            const liveMax = Math.min(
+              Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0),
+              25000
+            );
+            if (currentScroll >= Math.max(maxScrollHeight, liveMax)) {
               clearInterval(downTimer);
               setTimeout(() => {
                 // Scroll back up so sticky navbars reveal themselves
                 window.scrollBy(0, -600);
                 setTimeout(() => {
                   window.scrollTo(0, 0);
-                  setTimeout(() => resolve(true), 180);
-                }, 100);
-              }, 150);
+                  setTimeout(() => resolve(true), 220);
+                }, 120);
+              }, 200);
             }
-          }, 60);
+          }, 65);
         });
         return true;
       }),
-      new Promise((resolve) => setTimeout(() => resolve(false), 3500)),
+      new Promise((resolve) => setTimeout(() => resolve(false), maxTimeoutMs)),
     ]);
   } catch {}
 }
@@ -316,16 +353,85 @@ async function inlineDynamicCssomStyles(page) {
 async function normalizeRenderedDomForClone(page) {
   try {
     await page.evaluate(() => {
+      // 0. Capture & preserve Web Animations API (`document.getAnimations()`)!
+      //    - Infinite WAAPI loops (e.g. pulsing radar rings, floating icons) -> convert to native CSS @keyframes
+      //      and commit safe opacity so scaled pulse rings NEVER freeze as giant solid opaque circles!
+      //    - One-shot entrance animations -> finish & commit styles cleanly.
+      try {
+        if (typeof document.getAnimations === 'function') {
+          const anims = document.getAnimations();
+          const cssKeyframes = [];
+          let kfIdx = 0;
+
+          anims.forEach((anim) => {
+            try {
+              const effect = anim.effect;
+              const target = effect && effect.target;
+              if (!target || target.nodeType !== 1) return;
+              // Skip native CSS animations that already come from stylesheets
+              if (anim.animationName) return;
+
+              const timing = typeof effect.getTiming === 'function' ? effect.getTiming() : {};
+              const keyframes = typeof effect.getKeyframes === 'function' ? effect.getKeyframes() : [];
+
+              if (timing.iterations === Infinity && keyframes.length >= 2) {
+                const name = `__cloner_waapi_${kfIdx++}`;
+                const steps = keyframes
+                  .map((kf, i) => {
+                    const pct =
+                      kf.offset != null
+                        ? Math.round(kf.offset * 100)
+                        : Math.round((i / (keyframes.length - 1)) * 100);
+                    const props = [];
+                    if (kf.opacity != null) props.push(`opacity: ${kf.opacity}`);
+                    if (kf.transform != null) props.push(`transform: ${kf.transform}`);
+                    if (kf.filter != null) props.push(`filter: ${kf.filter}`);
+                    return props.length ? `${pct}% { ${props.join('; ')}; }` : '';
+                  })
+                  .filter(Boolean)
+                  .join(' ');
+
+                if (steps) {
+                  const dur = typeof timing.duration === 'number' && timing.duration > 0 ? timing.duration : 2000;
+                  const dir = timing.direction || 'normal';
+                  const ease = timing.easing || 'ease-in-out';
+                  cssKeyframes.push(`@keyframes ${name} { ${steps} }`);
+                  target.style.animation = `${name} ${dur}ms ${ease} 0ms infinite ${dir}`;
+                  // Also commit safe resting opacity if WAAPI animates opacity down to 0 on a scaled ring
+                  const cs = window.getComputedStyle(target);
+                  if (cs && parseFloat(cs.opacity) < 0.35 && !target.style.opacity) {
+                    target.style.opacity = cs.opacity;
+                  }
+                }
+              } else if (timing.iterations && timing.iterations !== Infinity) {
+                try {
+                  anim.finish();
+                  if (typeof anim.commitStyles === 'function') anim.commitStyles();
+                } catch {}
+              }
+            } catch {}
+          });
+
+          if (cssKeyframes.length > 0 && document.head) {
+            let kfStyle = document.getElementById('cloner-waapi-keyframes');
+            if (!kfStyle) {
+              kfStyle = document.createElement('style');
+              kfStyle.id = 'cloner-waapi-keyframes';
+              document.head.appendChild(kfStyle);
+            }
+            kfStyle.textContent = cssKeyframes.join('\n');
+          }
+        }
+      } catch {}
+
       // 1. Fix corrupted inline styles (e.g. `background-image: ;` when shorthand uses CSS variables)
       document.querySelectorAll('[style]').forEach((el) => {
         let styleAttr = el.getAttribute('style') || '';
         const ssrStyle = el.getAttribute('data-cloner-init-style') || '';
 
         if (styleAttr.includes(': ;') || styleAttr.includes(':;')) {
-          // Remove broken empty property declarations like `background-image: ;`
           styleAttr = styleAttr.replace(/[a-z-]+\s*:\s*;\s*/gi, '');
 
-          // First try restoring original `background:` from SSR snapshot if it had a gradient or var()
           let restoredBg = '';
           if (ssrStyle) {
             const bgMatch = ssrStyle.match(/(?:^|;)\s*(background(?:-image|-color)?\s*:[^;]+)/i);
@@ -334,7 +440,6 @@ async function normalizeRenderedDomForClone(page) {
             }
           }
 
-          // Fallback to live computed style from Chromium memory
           if (!restoredBg) {
             try {
               const cs = window.getComputedStyle(el);
@@ -351,7 +456,6 @@ async function normalizeRenderedDomForClone(page) {
           }
 
           if (restoredBg) {
-            // Strip any transparent background-color that overwrote the gradient
             styleAttr = styleAttr.replace(/background-color\s*:\s*rgba\(0,\s*0,\s*0,\s*0\)\s*;?/gi, '');
             styleAttr = `${styleAttr.replace(/;+\s*$/, '')}; ${restoredBg};`;
           }
@@ -359,53 +463,111 @@ async function normalizeRenderedDomForClone(page) {
         }
       });
 
-      // 2. Fix `translateX(NaNpx)` and hidden scroll/appear/navigation elements
-      document.querySelectorAll('[style]').forEach((el) => {
-        const styleAttr = el.getAttribute('style') || '';
-        if (!styleAttr) return;
+      // 2. Universal Scroll-Reveal / `whileInView` / GSAP / AOS / Elementor / Navigation Normalizer
+      document
+        .querySelectorAll('[style], [data-aos], [data-sr-id], .elementor-invisible, .wow')
+        .forEach((el) => {
+          const styleAttr = el.getAttribute('style') || '';
+          const clsStr = typeof el.className === 'string' ? el.className : '';
 
-        // Fix broken NaN ticker transforms (e.g., blue grid background behind tabs)
-        if (styleAttr.includes('NaN')) {
-          const fixed = styleAttr
-            .replace(/translateX\([^)]*NaN[^)]*\)/gi, 'translateX(0px)')
-            .replace(/translateY\([^)]*NaN[^)]*\)/gi, 'translateY(0px)')
-            .replace(/opacity\s*:\s*0(?:\.0+)?\b/gi, 'opacity: 1');
-          el.setAttribute('style', fixed);
-          return;
-        }
-
-        const isNav =
-          el.tagName === 'NAV' ||
-          el.tagName === 'HEADER' ||
-          el.getAttribute('name') === 'Navigation' ||
-          el.getAttribute('data-framer-name') === 'Navigation' ||
-          Boolean(el.querySelector && el.querySelector('nav'));
-
-        const hasScrollOrAppearTransform =
-          styleAttr.includes('will-change: transform') ||
-          styleAttr.includes('will-change:transform') ||
-          el.hasAttribute('data-framer-appear-id') ||
-          el.hasAttribute('data-aos') ||
-          isNav;
-
-        if (hasScrollOrAppearTransform) {
-          const op = el.style.opacity;
-          if (op !== '' && parseFloat(op) < 0.5) {
-            el.style.opacity = '1';
+          // Skip loaders, aria-hidden decorative backdrops, or Tailwind hover overlays (`group-hover:opacity-100`)
+          if (
+            clsStr.includes('loader') ||
+            clsStr.includes('hover:opacity-') ||
+            el.getAttribute('aria-hidden') === 'true' ||
+            el.hasAttribute('hidden')
+          ) {
+            return;
           }
-          const tf = el.style.transform || '';
-          if (tf && tf !== 'none') {
-            // Preserve intentional 50% centering transforms, reset scroll/appear offsets & scales
-            if (!tf.includes('-50%')) {
-              el.style.transform = 'none';
+
+          // Reveal Elementor / AOS / WOW hidden classes
+          if (el.classList && el.classList.contains('elementor-invisible')) {
+            el.classList.remove('elementor-invisible');
+          }
+
+          if (!styleAttr) return;
+
+          // Fix broken NaN ticker transforms (e.g., blue grid background behind tabs)
+          if (styleAttr.includes('NaN')) {
+            const fixed = styleAttr
+              .replace(/translateX\([^)]*NaN[^)]*\)/gi, 'translateX(0px)')
+              .replace(/translateY\([^)]*NaN[^)]*\)/gi, 'translateY(0px)')
+              .replace(/opacity\s*:\s*0(?:\.0+)?\b/gi, 'opacity: 1');
+            el.setAttribute('style', fixed);
+            return;
+          }
+
+          // Restore vertical section timeline lines (`origin-top` + `scaleY(0)`) reset when scrolling back to top
+          if (
+            clsStr.includes('origin-top') &&
+            styleAttr.includes('scaleY(0)') &&
+            !clsStr.includes('fixed')
+          ) {
+            el.style.transform = 'scaleY(1)';
+            return;
+          }
+
+          const isNav =
+            el.tagName === 'NAV' ||
+            el.tagName === 'HEADER' ||
+            el.getAttribute('name') === 'Navigation' ||
+            el.getAttribute('data-framer-name') === 'Navigation' ||
+            Boolean(el.querySelector && el.querySelector('nav'));
+
+          const hasExplicitAppearMarker =
+            styleAttr.includes('will-change: transform') ||
+            styleAttr.includes('will-change:transform') ||
+            el.hasAttribute('data-framer-appear-id') ||
+            el.hasAttribute('data-w-id') ||
+            el.hasAttribute('data-aos') ||
+            el.hasAttribute('data-sr-id') ||
+            isNav;
+
+          // Also catch Framer Motion v11/v12, GSAP, & ScrollReveal inline `opacity: 0` content blocks WITHOUT `will-change`!
+          const opVal = el.style.opacity !== '' ? parseFloat(el.style.opacity) : 1;
+          const hasRealContent =
+            (el.innerText && el.innerText.trim().length > 0) ||
+            Boolean(
+              el.querySelector &&
+                el.querySelector('img, svg, input, textarea, select, button, form, video, iframe, canvas')
+            );
+          const isHiddenMotionContent =
+            opVal <= 0.12 &&
+            hasRealContent &&
+            !clsStr.includes('pointer-events-none') &&
+            (styleAttr.includes('transform') ||
+              styleAttr.includes('translate') ||
+              styleAttr.includes('scale') ||
+              el.tagName === 'SECTION' ||
+              el.tagName === 'H1' ||
+              el.tagName === 'H2' ||
+              el.tagName === 'H3' ||
+              el.tagName === 'P' ||
+              el.tagName === 'DIV' ||
+              el.tagName === 'LI' ||
+              el.tagName === 'FORM');
+
+          if (hasExplicitAppearMarker || isHiddenMotionContent) {
+            const threshold = hasExplicitAppearMarker ? 0.5 : 0.12;
+            if (el.style.opacity !== '' && opVal <= threshold) {
+              el.style.opacity = '1';
+            }
+            if (el.style.visibility === 'hidden') {
+              el.style.visibility = 'visible';
+            }
+            const tf = el.style.transform || '';
+            if (tf && tf !== 'none') {
+              // Preserve intentional 50% centering transforms, reset scroll/appear offsets & scales
+              if (!tf.includes('-50%')) {
+                el.style.transform = 'none';
+              }
+            }
+            const flt = el.style.filter || '';
+            if (flt && flt.includes('blur(') && !flt.includes('blur(0px)')) {
+              el.style.filter = 'none';
             }
           }
-          const flt = el.style.filter || '';
-          if (flt && flt.includes('blur(') && !flt.includes('blur(0px)')) {
-            el.style.filter = 'none';
-          }
-        }
-      });
+        });
 
       // 3. Ensure SVG line icons with animated stroke-dashoffset are fully drawn
       document.querySelectorAll('svg path[stroke-dashoffset]').forEach((p) => {
@@ -522,6 +684,33 @@ async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, d
       const resolvedUrl = new URL(rawRef, cssBaseUrl).toString();
       const assetInfo = assetMap.get(resolvedUrl);
       if (assetInfo) {
+        // Inline webfont files (<= 350KB) as data: URIs so Chrome/Edge file:// NEVER blocks custom fonts with origin 'null' CORS!
+        if (assetInfo.folder === 'fonts' && assetInfo.diskPath) {
+          if (!assetInfo.dataUri) {
+            try {
+              const stat = fs.statSync(assetInfo.diskPath);
+              if (stat.size > 0 && stat.size <= 350 * 1024) {
+                const ext = path.extname(assetInfo.diskPath).toLowerCase();
+                const mime =
+                  ext === '.woff2'
+                    ? 'font/woff2'
+                    : ext === '.woff'
+                    ? 'font/woff'
+                    : ext === '.ttf'
+                    ? 'font/ttf'
+                    : ext === '.otf'
+                    ? 'font/otf'
+                    : 'font/woff2';
+                assetInfo.dataUri = `data:${mime};base64,${fs.readFileSync(assetInfo.diskPath).toString('base64')}`;
+              }
+            } catch {}
+          }
+          if (assetInfo.dataUri) {
+            updatedCss = updatedCss.split(fullMatch).join(`url("${assetInfo.dataUri}")`);
+            continue;
+          }
+        }
+
         const fileTarget = assetInfo.originalFilename || assetInfo.filename;
         const relPath =
           depthPrefix === '../'
@@ -542,14 +731,14 @@ async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, d
  * 2. All downloaded 3D/WebGL/Lottie binary assets (.glb, .gltf, .splinecode, .lottie, .rive, .bin, .hdr, .wasm)
  *    so `fetch()` and `XMLHttpRequest` return the binary data immediately from memory on `file://` and offline!
  */
-function buildUniversalOfflineVfs(siteDir, assetMap) {
+function buildUniversalOfflineVfs(siteDir, assetMap, includeEsModules = true) {
   try {
     const jsDir = path.join(siteDir, 'assets', 'js');
     const otherDir = path.join(siteDir, 'assets', 'other');
     const vfsPath = path.join(jsDir, '__cloner_vfs.js');
 
     const modules = {};
-    if (fs.existsSync(jsDir)) {
+    if (includeEsModules && fs.existsSync(jsDir)) {
       for (const file of fs.readdirSync(jsDir)) {
         if ((file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.framercms')) && !file.startsWith('__cloner')) {
           try {
@@ -563,11 +752,39 @@ function buildUniversalOfflineVfs(siteDir, assetMap) {
       }
     }
 
-    // Write modules dictionary first, then stream each binary asset ONCE with lightweight pointer aliases
-    // so a 10MB .glb is never duplicated 6x in memory or on disk!
+    // Build Universal Asset Redirect Map (`window.__CLONER_ASSET_MAP__`) so hydrated Next.js (`next/image`, `next/font`, Turbopack/Webpack chunks),
+    // React, Nuxt, Vue, SvelteKit, and Astro resolve root-relative & dynamic URLs straight to local downloaded files on `file://`!
+    const urlMap = {};
+    for (const [remoteUrl, info] of assetMap.entries()) {
+      const rel = info.relativePath;
+      urlMap[remoteUrl] = rel;
+      try {
+        const u = new URL(remoteUrl);
+        if (u.pathname) {
+          urlMap[u.pathname + (u.search || '')] = rel;
+          if (!urlMap[u.pathname]) {
+            urlMap[u.pathname] = rel;
+          }
+          // Map Next.js `/_next/image?url=%2Ffoo.png&w=...` decoded inner `url` parameter so ANY responsive width `w=` resolves offline!
+          if (u.pathname.includes('/_next/image') && u.searchParams.has('url')) {
+            const innerUrl = u.searchParams.get('url');
+            if (innerUrl) {
+              urlMap[innerUrl] = rel;
+            }
+          }
+          // Map Next.js / Webpack partial static paths (`static/chunks/...`, `static/media/...`)
+          const nextIdx = u.pathname.indexOf('/_next/');
+          if (nextIdx !== -1) {
+            urlMap[u.pathname.slice(nextIdx + '/_next/'.length)] = rel;
+          }
+        }
+      } catch {}
+    }
+
+    // Write modules + universal asset map first, then stream each binary asset ONCE with lightweight pointer aliases
     fs.writeFileSync(
       vfsPath,
-      `window.__CLONER_MODULES__ = ${JSON.stringify(modules)};\nwindow.__CLONER_BINARY_ASSETS__ = {};\n`,
+      `window.__CLONER_ASSET_MAP__ = ${JSON.stringify(urlMap)};\nwindow.__CLONER_MODULES__ = ${JSON.stringify(modules)};\nwindow.__CLONER_BINARY_ASSETS__ = {};\n`,
       'utf8'
     );
 
@@ -615,17 +832,18 @@ function buildUniversalOfflineVfs(siteDir, assetMap) {
       fs.appendFileSync(vfsPath, aliasLines.join('\n') + '\n', 'utf8');
     }
 
-    return Object.keys(modules).length > 0 || binaryCount > 0;
+    return Object.keys(urlMap).length > 0 || Object.keys(modules).length > 0 || binaryCount > 0;
   } catch {
     return false;
   }
 }
 
 /**
- * Inject a lightweight CSS + JS runtime guard + VFS ES Module / 3D Asset Bootloader into cloned HTML pages so:
- * 1. `<script type="module">` and dynamic `import()` run with 0 CORS errors on `file://` via Blob URLs + `<script type="importmap">`
- * 2. 3D WebGL models (`.glb`, `.gltf`, `.splinecode`, `.wasm`) load via in-memory `fetch`/`XHR` VFS on `file://` so 3D interactive animations (head tracking, breathing, zoom) work live!
- * 3. Sticky navbars, scroll-linked sections, ticker backgrounds, and button gradients are protected against hydration bugs.
+ * Inject a lightweight CSS + JS runtime guard + Universal VFS / Framework Hydration Bootloader into cloned HTML pages so:
+ * 1. Next.js 13/14/15/16 (Turbopack & Webpack), React, Nuxt, SvelteKit & Astro hydrate cleanly on `file://` (`data-cloner-orig-src`, `next/image` & `next/font` virtualizers)
+ * 2. `<script type="module">` and dynamic `import()` run with 0 CORS errors on `file://` via Blob URLs + `<script type="importmap">`
+ * 3. 3D WebGL models (`.glb`, `.gltf`, `.splinecode`, `.wasm`) load via in-memory `fetch`/`XHR` VFS on `file://`
+ * 4. Sticky navbars, scroll-linked sections, WAAPI pulses, ticker backgrounds, and button gradients stay 100% intact.
  */
 function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = []) {
   const runtimeCss = `
@@ -653,7 +871,33 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
 <script src="assets/js/__cloner_vfs.js"></script>
 <script id="cloner-vfs-boot">
 (function() {
-  // 1. Safe History pushState/replaceState wrapper on file:// so SPA routers (Next.js/React Router/Framer) never crash with SecurityError
+  var assetMap = window.__CLONER_ASSET_MAP__ || {};
+
+  // Universal URL Resolver for Next.js (next/image, next/font, Turbopack/Webpack chunks), Vite, Nuxt & SPA assets
+  function resolveClonerUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    if (rawUrl.startsWith('data:') || rawUrl.startsWith('blob:') || rawUrl.startsWith('assets/')) return null;
+    if (assetMap[rawUrl]) return assetMap[rawUrl];
+    try {
+      // Handle Next.js /_next/image?url=%2F...&w=... for any responsive width
+      if (rawUrl.indexOf('/_next/image') !== -1 && rawUrl.indexOf('url=') !== -1) {
+        var qIdx = rawUrl.indexOf('?');
+        if (qIdx !== -1) {
+          var params = new URLSearchParams(rawUrl.slice(qIdx + 1));
+          var inner = params.get('url');
+          if (inner && assetMap[inner]) return assetMap[inner];
+        }
+      }
+      var noHash = rawUrl.split('#')[0];
+      if (assetMap[noHash]) return assetMap[noHash];
+      var cleanPath = noHash.split('?')[0];
+      if (assetMap[cleanPath]) return assetMap[cleanPath];
+    } catch (e) {}
+    return null;
+  }
+  window.__resolveClonerUrl = resolveClonerUrl;
+
+  // 1. Safe History pushState/replaceState wrapper on file:// so SPA routers never crash with SecurityError
   if (window.location.protocol === 'file:') {
     var origPush = history.pushState;
     var origReplace = history.replaceState;
@@ -661,7 +905,242 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
     history.replaceState = function() { try { return origReplace.apply(this, arguments); } catch (e) {} };
   }
 
-  // 2. Intercept fetch() & XMLHttpRequest for 3D models (.glb, .gltf, .splinecode, .wasm, .bin) on file:// & offline
+  // 2. Virtualize <script>, <link>, and <img> attributes/properties so Next.js Turbopack/Webpack chunks & next/image work live on file://!
+  try {
+    var origGetAttr = Element.prototype.getAttribute;
+    var origSetAttr = Element.prototype.setAttribute;
+
+    Element.prototype.getAttribute = function(name) {
+      if (name === 'src' && this.tagName === 'SCRIPT') {
+        var origSrc = origGetAttr.call(this, 'data-cloner-orig-src');
+        if (origSrc) return origSrc;
+      }
+      if (name === 'href' && this.tagName === 'LINK') {
+        var origHref = origGetAttr.call(this, 'data-cloner-orig-href');
+        if (origHref) return origHref;
+      }
+      return origGetAttr.call(this, name);
+    };
+
+    Element.prototype.setAttribute = function(name, value) {
+      if (typeof value === 'string') {
+        if (this.tagName === 'IMG' || this.tagName === 'SOURCE') {
+          if (name === 'src') {
+            var mappedImg = resolveClonerUrl(value);
+            if (mappedImg) return origSetAttr.call(this, 'src', mappedImg);
+            // Prevent broken root-relative /_next/image paths from overwriting an already-valid local image
+            if (value.charAt(0) === '/' && (origGetAttr.call(this, 'src') || '').indexOf('assets/') === 0) return;
+          } else if (name === 'srcset' || name === 'srcSet') {
+            if (value.indexOf('/_next/') !== -1 || value.charAt(0) === '/') {
+              var firstCand = value.split(',')[0].trim().split(/\\s+/)[0];
+              var mappedSet = resolveClonerUrl(firstCand);
+              if (mappedSet) {
+                origSetAttr.call(this, 'src', mappedSet);
+              }
+              return;
+            }
+          }
+        } else if (this.tagName === 'SCRIPT' && name === 'src') {
+          var mappedJs = resolveClonerUrl(value);
+          if (mappedJs) {
+            origSetAttr.call(this, 'data-cloner-orig-src', value);
+            return origSetAttr.call(this, 'src', mappedJs);
+          }
+        } else if (this.tagName === 'LINK' && name === 'href') {
+          var mappedCss = resolveClonerUrl(value);
+          if (mappedCss) {
+            origSetAttr.call(this, 'data-cloner-orig-href', value);
+            return origSetAttr.call(this, 'href', mappedCss);
+          }
+        }
+      }
+      return origSetAttr.call(this, name, value);
+    };
+
+    // Virtualize HTMLScriptElement.prototype.src (fixes Next.js Expected document.currentScript src to contain '/_next/' invariant!)
+    var scriptSrcDesc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+    if (scriptSrcDesc && scriptSrcDesc.get && scriptSrcDesc.set) {
+      Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+        get: function() {
+          var raw = scriptSrcDesc.get.call(this);
+          var origSrc = origGetAttr.call(this, 'data-cloner-orig-src');
+          if (origSrc && origSrc.indexOf('/_next/') !== -1 && raw && raw.indexOf('/assets/js/') !== -1) {
+            var idx = raw.indexOf('/assets/js/');
+            return raw.slice(0, idx) + origSrc;
+          }
+          return raw;
+        },
+        set: function(val) {
+          var mapped = resolveClonerUrl(String(val));
+          if (mapped) {
+            origSetAttr.call(this, 'data-cloner-orig-src', String(val));
+            return scriptSrcDesc.set.call(this, mapped);
+          }
+          return scriptSrcDesc.set.call(this, val);
+        },
+        configurable: true
+      });
+    }
+
+    // Virtualize HTMLImageElement.prototype.src & srcset setters for React / Next.js hydration
+    var imgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    if (imgSrcDesc && imgSrcDesc.set && imgSrcDesc.get) {
+      Object.defineProperty(HTMLImageElement.prototype, 'src', {
+        get: imgSrcDesc.get,
+        set: function(val) {
+          var sVal = String(val || '');
+          var mapped = resolveClonerUrl(sVal);
+          if (mapped) return imgSrcDesc.set.call(this, mapped);
+          if (sVal.charAt(0) === '/' && (origGetAttr.call(this, 'src') || '').indexOf('assets/') === 0) return;
+          return imgSrcDesc.set.call(this, val);
+        },
+        configurable: true
+      });
+    }
+    var imgSrcsetDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'srcset');
+    if (imgSrcsetDesc && imgSrcsetDesc.set && imgSrcsetDesc.get) {
+      Object.defineProperty(HTMLImageElement.prototype, 'srcset', {
+        get: imgSrcsetDesc.get,
+        set: function(val) {
+          var sVal = String(val || '');
+          if (sVal.indexOf('/_next/') !== -1 || sVal.charAt(0) === '/') {
+            var firstCand = sVal.split(',')[0].trim().split(/\\s+/)[0];
+            var mapped = resolveClonerUrl(firstCand);
+            if (mapped && imgSrcDesc && imgSrcDesc.set) {
+              imgSrcDesc.set.call(this, mapped);
+            }
+            return;
+          }
+          return imgSrcsetDesc.set.call(this, val);
+        },
+        configurable: true
+      });
+    }
+    // Suppress dynamic file:// preload links (e.g. React 19 ReactDOM.preload font/fetch/modulepreload) that trigger null-origin CORS
+    if (window.location.protocol === 'file:') {
+      var shouldSkipLink = function(node) {
+        if (!node || node.nodeType !== 1 || node.tagName !== 'LINK') return false;
+        var rel = (origGetAttr.call(node, 'rel') || '').toLowerCase();
+        var asAttr = (origGetAttr.call(node, 'as') || '').toLowerCase();
+        return (
+          rel === 'modulepreload' ||
+          (rel === 'preload' && (asAttr === 'font' || asAttr === 'fetch' || asAttr === 'script'))
+        );
+      };
+      var origAppendChild = Node.prototype.appendChild;
+      var origInsertBefore = Node.prototype.insertBefore;
+      Node.prototype.appendChild = function(child) {
+        if (shouldSkipLink(child)) return child;
+        return origAppendChild.call(this, child);
+      };
+      Node.prototype.insertBefore = function(child, refNode) {
+        if (shouldSkipLink(child)) return child;
+        return origInsertBefore.call(this, child, refNode);
+      };
+    }
+  } catch (e) {}
+
+  // 2b. Smart IntersectionObserver Stabilizer & Event-Driven Auto-Reveal for Framer Motion whileInView, GSAP, AOS & ScrollReveal:
+  //     - Triggers directly from observe(el) regardless of when React/Next/Nuxt chunks finish hydrating!
+  //     - Prevents revealed sections from reverting to opacity: 0 when scrolled out of view (once: false -> once: true)
+  if (typeof window.IntersectionObserver === 'function') {
+    try {
+      var NativeIO = window.IntersectionObserver;
+      var WrappedIO = function(callback, options) {
+        var pendingEls = new Set();
+        var revealTimer = null;
+        var record = { cb: callback, instance: null };
+
+        var flushPending = function() {
+          revealTimer = null;
+          if (pendingEls.size === 0) return;
+          var nowTs = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+          var vpRect = {
+            top: 0,
+            left: 0,
+            bottom: window.innerHeight || 900,
+            right: window.innerWidth || 1440,
+            width: window.innerWidth || 1440,
+            height: window.innerHeight || 900,
+            x: 0,
+            y: 0
+          };
+          var synthEntries = [];
+          pendingEls.forEach(function(el) {
+            if (el && el.isConnected) {
+              var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : vpRect;
+              synthEntries.push({
+                target: el,
+                isIntersecting: true,
+                intersectionRatio: 1,
+                boundingClientRect: rect,
+                intersectionRect: rect,
+                rootBounds: vpRect,
+                time: nowTs
+              });
+            }
+          });
+          pendingEls.clear();
+          if (synthEntries.length > 0) {
+            try { record.cb.call(record.instance, synthEntries, record.instance); } catch (err) {}
+          }
+        };
+
+        var nativeObs = new NativeIO(function(entries) {
+          var filtered = [];
+          for (var i = 0; i < entries.length; i++) {
+            var ent = entries[i];
+            if (ent.isIntersecting) {
+              if (ent.target) ent.target.__clonerRevealed = true;
+              filtered.push(ent);
+            } else if (!ent.target || !ent.target.__clonerRevealed) {
+              filtered.push(ent);
+            }
+          }
+          if (filtered.length > 0) {
+            try { callback.call(record.instance, filtered, record.instance); } catch (err) {}
+          }
+        }, options);
+
+        var wrapper = {
+          root: nativeObs.root,
+          rootMargin: nativeObs.rootMargin,
+          thresholds: nativeObs.thresholds,
+          observe: function(el) {
+            if (el && el.nodeType === 1) {
+              el.__clonerRevealed = true;
+              pendingEls.add(el);
+              if (!revealTimer) {
+                revealTimer = setTimeout(flushPending, 60);
+              }
+            }
+            return nativeObs.observe(el);
+          },
+          unobserve: function(el) {
+            pendingEls.delete(el);
+            return nativeObs.unobserve(el);
+          },
+          disconnect: function() {
+            pendingEls.clear();
+            if (revealTimer) {
+              clearTimeout(revealTimer);
+              revealTimer = null;
+            }
+            return nativeObs.disconnect();
+          },
+          takeRecords: function() {
+            return nativeObs.takeRecords();
+          }
+        };
+        record.instance = wrapper;
+        return wrapper;
+      };
+      WrappedIO.prototype = NativeIO.prototype;
+      window.IntersectionObserver = WrappedIO;
+    } catch (e) {}
+  }
+
+  // 3. Intercept fetch() & XMLHttpRequest for 3D models (.glb, .gltf, .splinecode, .wasm, .bin) & SPA routers on file://
   var binAssets = window.__CLONER_BINARY_ASSETS__ || {};
   function decodeBase64ToBytes(b64) {
     var binStr = atob(b64);
@@ -684,7 +1163,7 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
   if (typeof window.fetch === 'function') {
     var origFetch = window.fetch;
     window.fetch = function(input, init) {
-      var urlStr = typeof input === 'string' ? input : (input && input.url) || '';
+      var urlStr = typeof input === 'string' ? input : (input && (input.url || input.href)) || String(input || '');
       var b64 = matchVfsAsset(urlStr);
       if (b64) {
         var bytes = decodeBase64ToBytes(b64);
@@ -693,11 +1172,49 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
           headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength) }
         }));
       }
+      // Prevent Next.js RSC flight or Pages Router _next/data prefetches from throwing network/CORS errors on file://
+      if (window.location.protocol === 'file:') {
+        if (urlStr.indexOf('_rsc=') !== -1) {
+          return Promise.resolve(new Response('', { status: 200 }));
+        }
+        if (urlStr.indexOf('/_next/data/') !== -1) {
+          return Promise.resolve(new Response('{"pageProps":{}}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+      }
       return origFetch.apply(this, arguments);
     };
   }
 
-  // 3. Build Blob URLs + ImportMap for ES modules so <script type="module"> & dynamic import() run on file:// with zero CORS errors
+  if (typeof window.XMLHttpRequest === 'function') {
+    var origXhrOpen = XMLHttpRequest.prototype.open;
+    var origXhrSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      this.__clonerUrl = typeof url === 'string' ? url : (url && url.href) || String(url || '');
+      return origXhrOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function() {
+      var b64 = matchVfsAsset(this.__clonerUrl);
+      if (b64) {
+        var self = this;
+        var bytes = decodeBase64ToBytes(b64);
+        setTimeout(function() {
+          try {
+            Object.defineProperty(self, 'status', { value: 200, configurable: true });
+            Object.defineProperty(self, 'readyState', { value: 4, configurable: true });
+            var respVal = self.responseType === 'blob' ? new Blob([bytes]) : bytes.buffer;
+            Object.defineProperty(self, 'response', { value: respVal, configurable: true });
+            if (typeof self.onload === 'function') self.onload(new Event('load'));
+            self.dispatchEvent(new Event('load'));
+            if (typeof self.onreadystatechange === 'function') self.onreadystatechange(new Event('readystatechange'));
+          } catch (err) {}
+        }, 0);
+        return;
+      }
+      return origXhrSend.apply(this, arguments);
+    };
+  }
+
+  // 4. Build Blob URLs + ImportMap for ES modules so <script type="module"> & dynamic import() run on file:// with zero CORS errors
   var rawModules = window.__CLONER_MODULES__ || {};
   var moduleNames = Object.keys(rawModules);
   var entries = ${JSON.stringify(deferredModuleEntries)};
@@ -709,6 +1226,9 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
         code = code.split('"./' + other + '"').join('"@cloner/' + other + '"');
         code = code.split("'./" + other + "'").join("'@cloner/" + other + "'");
         code = code.split('\`./' + other + '\`').join('\`@cloner/' + other + '\`');
+        var escapedOther = other.replace(/[.*+?^$()|[\\]\\\\{}]/g, '\\\\$&');
+        var crossDirRe = new RegExp('(["\\\'\\\`])(?:\\.\\.?\\/[\\\\w./-]*\\/|\\/[\\\\w./-]*\\/)' + escapedOther + '\\\\1', 'g');
+        code = code.replace(crossDirRe, '$1@cloner/' + other + '$1');
       });
       rewrittenModules[name] = code;
     });
@@ -745,9 +1265,10 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
   const runtimeScript = `
 <script id="cloner-runtime-script">
 (function() {
-  // 1. Snapshot clean button styles, rewritten local .html links, and pre-rendered SPA root before hydration
+  // 1. Snapshot clean button styles, local images, rewritten local .html links, and pre-rendered SPA root before hydration
   var savedStyles = new WeakMap();
   var savedHrefs = new WeakMap();
+  var savedImgSrcs = new WeakMap();
   var savedRootHtml = '';
 
   function snapshotCleanDom() {
@@ -755,6 +1276,9 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
     if (rootEl && rootEl.innerHTML.trim().length > 100 && !savedRootHtml) {
       savedRootHtml = rootEl.innerHTML;
     }
+    document.querySelectorAll('img[src^="assets/"]').forEach(function(img) {
+      savedImgSrcs.set(img, img.getAttribute('src'));
+    });
     document.querySelectorAll('a[style], button[style], [data-framer-appear-id][style]').forEach(function(el) {
       var st = el.getAttribute('style') || '';
       if (st.includes('linear-gradient') || st.includes('background')) {
@@ -771,6 +1295,36 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
     var rootEl = document.getElementById('root') || document.getElementById('app') || document.getElementById('__next');
     if (rootEl && savedRootHtml && rootEl.innerHTML.trim().length === 0) {
       rootEl.innerHTML = savedRootHtml;
+    }
+
+    // Repair any <img> whose src was overwritten with a root-relative /... or /_next/image path during hydration
+    document.querySelectorAll('img').forEach(function(img) {
+      var rawSrc = img.getAttribute('src') || '';
+      if (rawSrc.charAt(0) === '/') {
+        var resolved = window.__resolveClonerUrl ? window.__resolveClonerUrl(rawSrc) : null;
+        if (resolved) {
+          img.setAttribute('src', resolved);
+          img.removeAttribute('srcset');
+        } else if (savedImgSrcs.has(img)) {
+          img.setAttribute('src', savedImgSrcs.get(img));
+          img.removeAttribute('srcset');
+        }
+      }
+    });
+
+    // Rewrite any dynamically-injected <style> tag (e.g. next/font / styled-jsx) referencing /_next/static/media/...
+    if (window.__resolveClonerUrl) {
+      document.querySelectorAll('style:not([data-cloner-checked])').forEach(function(stEl) {
+        var txt = stEl.textContent || '';
+        if (txt.indexOf('/_next/') !== -1 || txt.indexOf('url(/') !== -1) {
+          var replaced = txt.replace(/url\\((['"]?)(\\/[^'")]+)\\1\\)/g, function(full, q, ref) {
+            var loc = window.__resolveClonerUrl(ref);
+            return loc ? 'url("' + loc + '")' : full;
+          });
+          if (replaced !== txt) stEl.textContent = replaced;
+        }
+        stEl.setAttribute('data-cloner-checked', '1');
+      });
     }
 
     // If a live 3D WebGL engine (.stage.is-ready or canvas[data-engine]) has mounted, clear any static fallback background-image on the live canvas
@@ -831,21 +1385,23 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
     repairHydrationArtifacts();
   }
 
-  // Observe and repair for the first 8 seconds while hydration/scroll settles
+  // Observe and repair while hydration/scroll settles
   var obs = new MutationObserver(function() {
     repairHydrationArtifacts();
   });
   if (document.documentElement) {
-    obs.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ['style', 'href'] });
+    obs.observe(document.documentElement, { attributes: true, childList: true, subtree: true, attributeFilter: ['style', 'href', 'src'] });
   }
   window.addEventListener('scroll', repairHydrationArtifacts, { passive: true });
 })();
 </script>`;
 
+  // Prepend VFS bootloader at the VERY TOP of <head> so shims execute BEFORE any Next.js / Webpack / Vite <script> tag!
   if ($('head').length) {
-    $('head').append(runtimeCss + vfsBootHead);
+    $('head').prepend(vfsBootHead);
+    $('head').append(runtimeCss);
   } else {
-    $.root().prepend(runtimeCss + vfsBootHead);
+    $.root().prepend(vfsBootHead + runtimeCss);
   }
 
   if ($('body').length) {
@@ -1279,10 +1835,50 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       $('meta[http-equiv="Content-Security-Policy"]').remove();
 
       if (saveAssets) {
-        // 1. Stylesheets & Modulepreload / Preload links (<link rel="stylesheet|modulepreload|preload" href="...">)
+        // 0. Batch pre-fetch all uncached page assets concurrently in parallel (cuts Step 2 from ~23s to ~1.5s!)
+        const missingDomUrls = new Set();
+        const queueCandidateUrl = (raw) => {
+          if (!raw || typeof raw !== 'string') return;
+          const trimmed = raw.trim();
+          if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('#')) return;
+          try {
+            const abs = new URL(trimmed, basePageUrl).toString();
+            if (!assetMap.has(abs) && !failedAssetUrls.has(abs)) {
+              missingDomUrls.add(abs);
+            }
+          } catch {}
+        };
+
         const resourceLinks = $(
           'link[rel="stylesheet"][href], link[as="style"][href], link[rel="modulepreload"][href], link[rel="preload"][href]'
         ).toArray();
+        const imgElements = $('img, source, image, video, audio').toArray();
+        const scriptElements = $('script[src]').toArray();
+        const iconLinks = $('link[rel*="icon"][href]').toArray();
+
+        resourceLinks.forEach((el) => queueCandidateUrl($(el).attr('href')));
+        imgElements.forEach((el) => {
+          queueCandidateUrl($(el).attr('poster'));
+          const s = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('href') || $(el).attr('xlink:href');
+          if (s) {
+            queueCandidateUrl(s);
+          } else if ($(el).attr('srcset')) {
+            const firstSrc = ($(el).attr('srcset') || '').split(',')[0].trim().split(/\s+/)[0];
+            queueCandidateUrl(firstSrc);
+          }
+        });
+        scriptElements.forEach((el) => queueCandidateUrl($(el).attr('src')));
+        iconLinks.forEach((el) => queueCandidateUrl($(el).attr('href')));
+
+        if (missingDomUrls.size > 0) {
+          const urlList = [...missingDomUrls];
+          const batchSize = 12;
+          for (let i = 0; i < urlList.length; i += batchSize) {
+            await Promise.all(urlList.slice(i, i + batchSize).map((u) => fetchAndSaveAsset(u).catch(() => null)));
+          }
+        }
+
+        // 1. Stylesheets & Modulepreload / Preload links (<link rel="stylesheet|modulepreload|preload" href="...">)
         for (const el of resourceLinks) {
           const href = $(el).attr('href');
           if (!href || href.startsWith('data:')) continue;
@@ -1290,6 +1886,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
             const absUrl = new URL(href, basePageUrl).toString();
             const saved = assetMap.get(absUrl) || (await fetchAndSaveAsset(absUrl));
             if (saved && rewriteLinks) {
+              $(el).attr('data-cloner-orig-href', href);
               $(el).attr('href', saved.relativePath);
               $(el).removeAttr('integrity');
               $(el).removeAttr('crossorigin');
@@ -1308,16 +1905,28 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
           } catch {}
         }
 
-        // 2. Images (<img src="...">, <img srcset="...">, <source srcset="...">)
-        const imgElements = $('img, source, image').toArray();
+        // 2. Images, Videos, Audio & SVG <image> (<img src="...">, <video poster="...">, <audio src="...">)
         for (const el of imgElements) {
-          const src = $(el).attr('src') || $(el).attr('data-src');
+          const poster = $(el).attr('poster');
+          if (poster && !poster.startsWith('data:')) {
+            try {
+              const absPoster = new URL(poster, basePageUrl).toString();
+              const savedPoster = assetMap.get(absPoster) || (await fetchAndSaveAsset(absPoster));
+              if (savedPoster && rewriteLinks) {
+                $(el).attr('poster', savedPoster.relativePath);
+              }
+            } catch {}
+          }
+
+          const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('href') || $(el).attr('xlink:href');
           if (src && !src.startsWith('data:')) {
             try {
               const absUrl = new URL(src, basePageUrl).toString();
               const saved = assetMap.get(absUrl) || (await fetchAndSaveAsset(absUrl));
               if (saved && rewriteLinks) {
-                $(el).attr('src', saved.relativePath);
+                if ($(el).attr('href')) $(el).attr('href', saved.relativePath);
+                else if ($(el).attr('xlink:href')) $(el).attr('xlink:href', saved.relativePath);
+                else $(el).attr('src', saved.relativePath);
                 $(el).removeAttr('srcset');
                 $(el).removeAttr('data-src');
               }
@@ -1329,8 +1938,12 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
                 const absUrl = new URL(firstSrc, basePageUrl).toString();
                 const saved = assetMap.get(absUrl) || (await fetchAndSaveAsset(absUrl));
                 if (saved && rewriteLinks) {
-                  $(el).attr('src', saved.relativePath);
-                  $(el).removeAttr('srcset');
+                  if ((el.tagName || '').toLowerCase() === 'source' && $(el).parent().is('picture')) {
+                    $(el).attr('srcset', saved.relativePath);
+                  } else {
+                    $(el).attr('src', saved.relativePath);
+                    $(el).removeAttr('srcset');
+                  }
                 }
               } catch {}
             }
@@ -1339,7 +1952,6 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
 
         // 3. Scripts (<script src="...">)
         const deferredModuleEntries = [];
-        const scriptElements = $('script[src]').toArray();
         for (const el of scriptElements) {
           const src = $(el).attr('src');
           if (!src || src.startsWith('data:')) continue;
@@ -1347,6 +1959,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
             const absUrl = new URL(src, basePageUrl).toString();
             const saved = assetMap.get(absUrl) || (await fetchAndSaveAsset(absUrl));
             if (saved && rewriteLinks) {
+              $(el).attr('data-cloner-orig-src', src);
               $(el).attr('src', saved.relativePath);
               $(el).removeAttr('integrity');
               $(el).removeAttr('crossorigin');
@@ -1362,11 +1975,10 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         }
         pageItem.deferredModuleEntries = deferredModuleEntries;
 
-        // Remove <link rel="preload" as="fetch"> or <link rel="modulepreload"> that fail under file:// CORS
-        $('link[rel="preload"][as="fetch"], link[rel="modulepreload"]').remove();
+        // Remove <link rel="preload" as="fetch|font|script"> or <link rel="modulepreload"> that fail under file:// CORS
+        $('link[rel="preload"][as="fetch"], link[rel="preload"][as="font"], link[rel="preload"][as="script"], link[rel="modulepreload"]').remove();
 
         // 4. Favicons (<link rel="icon" href="...">)
-        const iconLinks = $('link[rel*="icon"][href]').toArray();
         for (const el of iconLinks) {
           const href = $(el).attr('href');
           if (!href || href.startsWith('data:')) continue;
@@ -1538,8 +2150,13 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         }
       }
 
-      // Build Universal Offline VFS (`assets/js/__cloner_vfs.js`) for ES modules & 3D/Lottie binary assets
-      hasVfs = buildUniversalOfflineVfs(siteDir, assetMap);
+      // Build Universal Offline VFS (`assets/js/__cloner_vfs.js`) for Asset Map, ES modules & 3D/Lottie binary assets
+      const needsEsModuleBundle =
+        capturedPages.some((p) => (p.deferredModuleEntries || []).length > 0) ||
+        [...assetMap.values()].some(
+          (a) => a.diskPath.endsWith('.mjs') || a.diskPath.endsWith('.framercms')
+        );
+      hasVfs = buildUniversalOfflineVfs(siteDir, assetMap, needsEsModuleBundle);
     }
 
     // Write final HTML files with VFS + Runtime Enhancer injected

@@ -4,4 +4,7 @@ storage/zips/
 storage/history.json
 .vercel/
 .env
+.deploy-env.json
+credentials.md
+deploy-sync.js
 *.log

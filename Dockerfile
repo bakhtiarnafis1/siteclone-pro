@@ -1,4 +1,3 @@
-# Official Microsoft Playwright image with Chromium and all Linux dependencies pre-installed
 FROM mcr.microsoft.com/playwright:v1.50.0-noble
 
 WORKDIR /app
