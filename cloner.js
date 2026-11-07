@@ -15,13 +15,14 @@ async function launchBrowser() {
     { channel: 'chrome', headless: true },
   ];
 
+  // Keep SwiftShader / software WebGL active so Three.js & 3D WebGL sites render in headless containers
   const launchArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--disable-software-rasterizer',
-    '--no-zygote',
+    '--enable-webgl',
+    '--ignore-gpu-blocklist',
+    '--enable-unsafe-swiftshader',
   ];
 
   let lastErr;
@@ -98,6 +99,8 @@ function classifyAsset(assetUrl, contentType = '') {
       if (!ext) ext = '.mp4';
     } else if (ext === '.framercms') {
       folder = 'js';
+    } else if (['.glb', '.gltf', '.splinecode', '.lottie', '.rive', '.bin', '.hdr', '.wasm'].includes(ext)) {
+      folder = 'other';
     } else {
       return null; // Skip non-static asset responses (e.g. XHR JSON, HTML documents)
     }
@@ -109,9 +112,11 @@ function classifyAsset(assetUrl, contentType = '') {
     const hash = crypto.createHash('md5').update(assetUrl).digest('hex').slice(0, 8);
     const filename = `${base}-${hash}${ext}`;
 
-    // For JS/MJS/FramerCMS modules, also track the exact original filename so relative ES module imports resolve
+    // For JS/MJS/FramerCMS/3D modules, also track the exact original filename so relative imports resolve
     const originalFilename =
-      folder === 'js' && rawBasename && rawBasename.length <= 140 ? rawBasename : null;
+      (folder === 'js' || folder === 'other') && rawBasename && rawBasename.length <= 140
+        ? rawBasename
+        : null;
 
     return {
       folder,
@@ -386,11 +391,72 @@ async function normalizeRenderedDomForClone(page) {
         }
       });
 
-      // 4. Clean up temporary SSR style attributes
+      // 4. Restore SPA #root/#app if React unmounted it after an uncaught async/WebGL error
+      const rootEl = document.getElementById('root') || document.getElementById('app') || document.getElementById('__next');
+      if (rootEl && rootEl.innerHTML.trim().length === 0 && window.__clonerSavedRootHtml) {
+        rootEl.innerHTML = window.__clonerSavedRootHtml;
+      }
+
+      // 5. Hide completed loading overlays (e.g. `.loader.is-done`) so they don't block the UI
+      document.querySelectorAll('.loader.is-done, [class*="loader"][class*="done"]').forEach((loader) => {
+        loader.style.opacity = '0';
+        loader.style.pointerEvents = 'none';
+        loader.style.display = 'none';
+      });
+
+      // 6. Clean up temporary SSR style attributes
       document.querySelectorAll('[data-cloner-init-style]').forEach((el) => {
         el.removeAttribute('data-cloner-init-style');
       });
     });
+  } catch {}
+}
+
+/**
+ * Snapshot rendered <canvas> elements (e.g. Three.js 3D models, WebGL scenes, charts)
+ * into real PNG image files in assets/images/ and set them as inline background-images
+ * on the <canvas> so 3D scenes & charts appear 100% intact even when opened offline via file://
+ */
+async function captureCanvasSnapshots(page, saveBufferAsAsset, pageUrl) {
+  try {
+    const snapshots = await page.evaluate(() => {
+      const results = [];
+      const canvases = Array.from(document.querySelectorAll('canvas'));
+      canvases.forEach((canvas, idx) => {
+        try {
+          const rect = canvas.getBoundingClientRect();
+          if (rect.width < 20 || rect.height < 20) return;
+          const dataUrl = canvas.toDataURL('image/png');
+          if (dataUrl && dataUrl.startsWith('data:image/png;base64,') && dataUrl.length > 1500) {
+            canvas.setAttribute('data-cloner-canvas-id', String(idx));
+            results.push({ idx, dataUrl });
+          }
+        } catch {}
+      });
+      return results;
+    });
+
+    for (const item of snapshots) {
+      const base64Data = item.dataUrl.replace(/^data:image\/png;base64,/, '');
+      const buf = Buffer.from(base64Data, 'base64');
+      const syntheticUrl = new URL(`/canvas-snapshot-${item.idx}.png`, pageUrl).toString();
+      const saved = saveBufferAsAsset(syntheticUrl, buf, 'image/png');
+      if (saved) {
+        await page.evaluate(
+          ({ idx, relPath }) => {
+            const c = document.querySelector(`canvas[data-cloner-canvas-id="${idx}"]`);
+            if (c) {
+              c.style.backgroundImage = `url("${relPath}")`;
+              c.style.backgroundSize = 'contain';
+              c.style.backgroundPosition = 'center';
+              c.style.backgroundRepeat = 'no-repeat';
+              c.removeAttribute('data-cloner-canvas-id');
+            }
+          },
+          { idx: item.idx, relPath: saved.hashedRelativePath }
+        );
+      }
+    }
   } catch {}
 }
 
@@ -428,12 +494,78 @@ async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, d
 }
 
 /**
- * Inject a lightweight CSS + JS runtime guard into cloned HTML pages so:
- * 1. Sticky navbars, scroll-linked sections, and ticker backgrounds never revert to opacity:0 or NaNpx during React/Framer hydration
- * 2. Button gradients and rewritten local `.html` links are protected against hydration overwrites
- * 3. Horizontal logo/background tickers and FAQ accordions animate smoothly even when opened offline via `file://`
+ * Build a Virtual File System (VFS) bundle (`assets/js/__cloner_vfs.js`) containing:
+ * 1. All downloaded ES module scripts (.js / .mjs) so `<script type="module">` and dynamic `import()`
+ *    can be booted via `<script type="importmap">` + `Blob` URLs even on `file://` (where Chrome blocks external module scripts).
+ * 2. All downloaded 3D/WebGL/Lottie binary assets (.glb, .gltf, .splinecode, .lottie, .rive, .bin, .hdr, .wasm)
+ *    so `fetch()` and `XMLHttpRequest` return the binary data immediately from memory on `file://` and offline!
  */
-function injectClonerRuntimeEnhancer($) {
+function buildUniversalOfflineVfs(siteDir, assetMap) {
+  try {
+    const jsDir = path.join(siteDir, 'assets', 'js');
+    const otherDir = path.join(siteDir, 'assets', 'other');
+
+    const modules = {};
+    if (fs.existsSync(jsDir)) {
+      for (const file of fs.readdirSync(jsDir)) {
+        if ((file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.framercms')) && !file.startsWith('__cloner')) {
+          try {
+            const fullPath = path.join(jsDir, file);
+            const stat = fs.statSync(fullPath);
+            if (stat.size <= 8 * 1024 * 1024) {
+              modules[file] = fs.readFileSync(fullPath, 'utf8');
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const binaryAssets = {};
+    if (fs.existsSync(otherDir)) {
+      for (const file of fs.readdirSync(otherDir)) {
+        try {
+          const fullPath = path.join(otherDir, file);
+          const stat = fs.statSync(fullPath);
+          if (stat.size <= 25 * 1024 * 1024) {
+            const b64 = fs.readFileSync(fullPath).toString('base64');
+            binaryAssets[`assets/other/${file}`] = b64;
+            binaryAssets[file] = b64;
+          }
+        } catch {}
+      }
+    }
+
+    // Also map original remote URLs and root-relative pathnames (e.g. "/models/clara-rigged.glb") to binaryAssets
+    for (const [remoteUrl, info] of assetMap.entries()) {
+      if (info.folder === 'other') {
+        const key = info.relativePath;
+        if (binaryAssets[key]) {
+          binaryAssets[remoteUrl] = binaryAssets[key];
+          try {
+            const u = new URL(remoteUrl);
+            if (u.pathname) {
+              binaryAssets[u.pathname] = binaryAssets[key];
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const vfsJs = `window.__CLONER_MODULES__ = ${JSON.stringify(modules)};\nwindow.__CLONER_BINARY_ASSETS__ = ${JSON.stringify(binaryAssets)};\n`;
+    fs.writeFileSync(path.join(jsDir, '__cloner_vfs.js'), vfsJs, 'utf8');
+    return Object.keys(modules).length > 0 || Object.keys(binaryAssets).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inject a lightweight CSS + JS runtime guard + VFS ES Module / 3D Asset Bootloader into cloned HTML pages so:
+ * 1. `<script type="module">` and dynamic `import()` run with 0 CORS errors on `file://` via Blob URLs + `<script type="importmap">`
+ * 2. 3D WebGL models (`.glb`, `.gltf`, `.splinecode`, `.wasm`) load via in-memory `fetch`/`XHR` VFS on `file://` so 3D interactive animations (head tracking, breathing, zoom) work live!
+ * 3. Sticky navbars, scroll-linked sections, ticker backgrounds, and button gradients are protected against hydration bugs.
+ */
+function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = []) {
   const runtimeCss = `
 <style id="cloner-runtime-styles">
   /* Keep navigation, appear elements & ticker backgrounds visible */
@@ -454,14 +586,113 @@ function injectClonerRuntimeEnhancer($) {
   }
 </style>`;
 
+  const vfsBootHead = hasVfs
+    ? `
+<script src="assets/js/__cloner_vfs.js"></script>
+<script id="cloner-vfs-boot">
+(function() {
+  // 1. Safe History pushState/replaceState wrapper on file:// so SPA routers (Next.js/React Router/Framer) never crash with SecurityError
+  if (window.location.protocol === 'file:') {
+    var origPush = history.pushState;
+    var origReplace = history.replaceState;
+    history.pushState = function() { try { return origPush.apply(this, arguments); } catch (e) {} };
+    history.replaceState = function() { try { return origReplace.apply(this, arguments); } catch (e) {} };
+  }
+
+  // 2. Intercept fetch() & XMLHttpRequest for 3D models (.glb, .gltf, .splinecode, .wasm, .bin) on file:// & offline
+  var binAssets = window.__CLONER_BINARY_ASSETS__ || {};
+  function decodeBase64ToBytes(b64) {
+    var binStr = atob(b64);
+    var len = binStr.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
+    return bytes;
+  }
+  function matchVfsAsset(urlStr) {
+    if (!urlStr || typeof urlStr !== 'string') return null;
+    if (binAssets[urlStr]) return binAssets[urlStr];
+    var clean = urlStr.split('?')[0].split('#')[0];
+    if (binAssets[clean]) return binAssets[clean];
+    for (var key in binAssets) {
+      if (clean.endsWith('/' + key) || clean === key) return binAssets[key];
+    }
+    return null;
+  }
+
+  if (typeof window.fetch === 'function') {
+    var origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      var urlStr = typeof input === 'string' ? input : (input && input.url) || '';
+      var b64 = matchVfsAsset(urlStr);
+      if (b64) {
+        var bytes = decodeBase64ToBytes(b64);
+        return Promise.resolve(new Response(bytes.buffer, {
+          status: 200,
+          headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength) }
+        }));
+      }
+      return origFetch.apply(this, arguments);
+    };
+  }
+
+  // 3. Build Blob URLs + ImportMap for ES modules so <script type="module"> & dynamic import() run on file:// with zero CORS errors
+  var rawModules = window.__CLONER_MODULES__ || {};
+  var moduleNames = Object.keys(rawModules);
+  var entries = ${JSON.stringify(deferredModuleEntries)};
+  if (moduleNames.length > 0 && entries.length > 0) {
+    var rewrittenModules = {};
+    moduleNames.forEach(function(name) {
+      var code = rawModules[name];
+      moduleNames.forEach(function(other) {
+        code = code.split('"./' + other + '"').join('"@cloner/' + other + '"');
+        code = code.split("'./" + other + "'").join("'@cloner/" + other + "'");
+        code = code.split('\`./' + other + '\`').join('\`@cloner/' + other + '\`');
+      });
+      rewrittenModules[name] = code;
+    });
+
+    var importsMap = {};
+    moduleNames.forEach(function(name) {
+      var blob = new Blob([rewrittenModules[name]], { type: 'text/javascript' });
+      var blobUrl = URL.createObjectURL(blob);
+      importsMap['@cloner/' + name] = blobUrl;
+      importsMap['./' + name] = blobUrl;
+      importsMap['assets/js/' + name] = blobUrl;
+    });
+
+    var im = document.createElement('script');
+    im.type = 'importmap';
+    im.textContent = JSON.stringify({ imports: importsMap });
+    document.head.appendChild(im);
+
+    window.addEventListener('DOMContentLoaded', function() {
+      entries.forEach(function(entry) {
+        if (importsMap['@cloner/' + entry]) {
+          var s = document.createElement('script');
+          s.type = 'module';
+          s.textContent = 'import "@cloner/' + entry + '";';
+          document.body.appendChild(s);
+        }
+      });
+    });
+  }
+})();
+</script>`
+    : '';
+
   const runtimeScript = `
 <script id="cloner-runtime-script">
 (function() {
-  // 1. Snapshot clean button styles and rewritten local .html links before SPA hydration
+  // 1. Snapshot clean button styles, rewritten local .html links, and pre-rendered SPA root before hydration
   var savedStyles = new WeakMap();
   var savedHrefs = new WeakMap();
+  var savedRootHtml = '';
 
   function snapshotCleanDom() {
+    var rootEl = document.getElementById('root') || document.getElementById('app') || document.getElementById('__next');
+    if (rootEl && rootEl.innerHTML.trim().length > 100 && !savedRootHtml) {
+      savedRootHtml = rootEl.innerHTML;
+    }
     document.querySelectorAll('a[style], button[style], [data-framer-appear-id][style]').forEach(function(el) {
       var st = el.getAttribute('style') || '';
       if (st.includes('linear-gradient') || st.includes('background')) {
@@ -474,6 +705,19 @@ function injectClonerRuntimeEnhancer($) {
   }
 
   function repairHydrationArtifacts() {
+    // Restore SPA #root ONLY if client-side re-mount crashed and emptied it completely
+    var rootEl = document.getElementById('root') || document.getElementById('app') || document.getElementById('__next');
+    if (rootEl && savedRootHtml && rootEl.innerHTML.trim().length === 0) {
+      rootEl.innerHTML = savedRootHtml;
+    }
+
+    // If a live 3D WebGL engine (.stage.is-ready or canvas[data-engine]) has mounted, clear any static fallback background-image on the live canvas
+    document.querySelectorAll('.stage.is-ready canvas, canvas[data-engine]').forEach(function(c) {
+      if (c.style && c.style.backgroundImage && c.getAttribute('data-cloner-static-canvas') !== '1') {
+        c.style.backgroundImage = 'none';
+      }
+    });
+
     // Restore any button gradient wiped by Framer Motion CSSOM bug
     document.querySelectorAll('a[style], button[style]').forEach(function(el) {
       var st = el.getAttribute('style') || '';
@@ -537,9 +781,9 @@ function injectClonerRuntimeEnhancer($) {
 </script>`;
 
   if ($('head').length) {
-    $('head').append(runtimeCss);
+    $('head').append(runtimeCss + vfsBootHead);
   } else {
-    $.root().prepend(runtimeCss);
+    $.root().prepend(runtimeCss + vfsBootHead);
   }
 
   if ($('body').length) {
@@ -653,15 +897,33 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       ignoreHTTPSErrors: true,
     });
 
-    // Snapshot original SSR inline `style` attributes before client-side JS mutates CSSOM shorthands
+    // Snapshot original SSR inline `style` attributes, force WebGL preserveDrawingBuffer for 3D canvas capture,
+    // and guard against React 18 unmounting #root on async WebGL/network errors
     await context.addInitScript(() => {
+      try {
+        const origGetContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+          if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
+            attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
+          }
+          return origGetContext.call(this, type, attrs);
+        };
+      } catch {}
+
       const saveInitStyle = (el) => {
         if (el && el.nodeType === 1 && el.hasAttribute('style') && !el.hasAttribute('data-cloner-init-style')) {
           el.setAttribute('data-cloner-init-style', el.getAttribute('style') || '');
         }
       };
+      const snapshotRoot = () => {
+        const r = document.getElementById('root') || document.getElementById('app') || document.getElementById('__next');
+        if (r && r.innerHTML.trim().length > 100) {
+          window.__clonerSavedRootHtml = r.innerHTML;
+        }
+      };
       const scanAll = () => {
         document.querySelectorAll('[style]').forEach(saveInitStyle);
+        snapshotRoot();
       };
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', scanAll, { once: true });
@@ -669,6 +931,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         scanAll();
       }
       new MutationObserver((mutations) => {
+        snapshotRoot();
         for (const m of mutations) {
           for (const node of m.addedNodes) {
             if (node && node.nodeType === 1) {
@@ -793,8 +1056,22 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
           timeout: 35000,
         });
 
-        // Wait for initial client-side hydration (React/Next/Framer)
-        await page.waitForTimeout(1400);
+        // Wait for network idle (bundles, fonts, 3D .glb assets) up to 10s
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+        // Wait for initial client-side hydration (React/Next/Framer/Three.js)
+        await page.waitForTimeout(1800);
+
+        // If the page has an active 3D/Suspense loader (e.g. .loader:not(.is-done)), wait up to 3s for it to finish
+        await page
+          .waitForFunction(
+            () => {
+              const loader = document.querySelector('.loader:not(.is-done)');
+              return !loader;
+            },
+            { timeout: 3000 }
+          )
+          .catch(() => {});
 
         if (autoScroll) {
           emitProgress({
@@ -808,9 +1085,10 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
           await autoScrollPage(page);
         }
 
-        // Wait for newly triggered network images/fonts & normalize DOM styles
+        // Wait for newly triggered network images/fonts, snapshot 3D/WebGL canvases & normalize DOM styles
         await page.waitForTimeout(800);
         await inlineDynamicCssomStyles(page);
+        await captureCanvasSnapshots(page, saveBufferAsAsset, currentUrl);
         await normalizeRenderedDomForClone(page);
 
         const finalPageUrl = page.url() || currentUrl;
@@ -919,6 +1197,17 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               $(el).attr('href', saved.relativePath);
               $(el).removeAttr('integrity');
               $(el).removeAttr('crossorigin');
+
+              // Also inline stylesheet content into <style data-cloner-inlined-css> so CSS works even if opened inside an unextracted ZIP
+              if (saved.folder === 'css' && ($(el).attr('rel') === 'stylesheet' || $(el).attr('as') === 'style')) {
+                try {
+                  const rawCss = fs.readFileSync(saved.diskPath, 'utf8');
+                  const inlinedCss = rawCss.includes('url(')
+                    ? await rewriteCssUrls(rawCss, saved.baseUrl, assetMap, fetchAndSaveAsset, 'assets/')
+                    : rawCss;
+                  $(el).after(`<style data-cloner-inlined-css="true">${inlinedCss}</style>`);
+                } catch {}
+              }
             }
           } catch {}
         }
@@ -953,6 +1242,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         }
 
         // 3. Scripts (<script src="...">)
+        const deferredModuleEntries = [];
         const scriptElements = $('script[src]').toArray();
         for (const el of scriptElements) {
           const src = $(el).attr('src');
@@ -964,9 +1254,20 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               $(el).attr('src', saved.relativePath);
               $(el).removeAttr('integrity');
               $(el).removeAttr('crossorigin');
+              if (($(el).attr('type') || '').toLowerCase() === 'module') {
+                const modName = path.basename(saved.relativePath);
+                deferredModuleEntries.push(modName);
+                // Remove direct <script type="module" src="..."> so Chrome file:// doesn't throw CORS error;
+                // VFS ImportMap bootloader will execute it via Blob URL + ImportMap!
+                $(el).remove();
+              }
             }
           } catch {}
         }
+        pageItem.deferredModuleEntries = deferredModuleEntries;
+
+        // Remove <link rel="preload" as="fetch"> or <link rel="modulepreload"> that fail under file:// CORS
+        $('link[rel="preload"][as="fetch"], link[rel="modulepreload"]').remove();
 
         // 4. Favicons (<link rel="icon" href="...">)
         const iconLinks = $('link[rel*="icon"][href]').toArray();
@@ -1040,22 +1341,19 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         });
       }
 
-      // 8. Inject Cloner Runtime Enhancer (protects gradients, navbars, tickers & links during hydration)
-      injectClonerRuntimeEnhancer($);
-
-      // Write final rewritten HTML file to disk
-      const outHtmlPath = path.join(siteDir, pageItem.filename);
-      fs.writeFileSync(outHtmlPath, $.html(), 'utf8');
+      // Temporarily store processed Cheerio instance so we can inject VFS after Step 3 rewrites JS/CSS
+      pageItem.$ = $;
     }
 
-    // Step 3: Rewrite url(...) inside all saved CSS files and remote asset URLs inside JS/MJS modules
+    // Step 3: Rewrite url(...) inside all saved CSS files and remote/root-relative asset URLs inside JS/MJS modules
+    let hasVfs = false;
     if (saveAssets && rewriteLinks) {
       emitProgress({
         pct: 90,
         pages: capturedPages.length,
         assets: assetMap.size,
-        title: 'Rewriting CSS & JS module paths…',
-        log: 'Updating url() and asset references inside downloaded CSS & JS files',
+        title: 'Rewriting CSS, JS & 3D VFS modules…',
+        log: 'Updating url() and building offline Virtual File System for ES modules & 3D assets',
         type: 'step',
       });
 
@@ -1076,12 +1374,16 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         } catch {}
       }
 
-      // Rewrite already-captured remote image/font URLs inside JS/MJS bundles so interactive tabs/components load local assets
+      // Rewrite already-captured remote & root-relative image/font/media/3D URLs inside JS/MJS bundles
       const jsRecords = [...assetMap.values()].filter(
         (a) => a.folder === 'js' && (a.diskPath.endsWith('.js') || a.diskPath.endsWith('.mjs'))
       );
       const replaceableAssets = [...assetMap.entries()].filter(
-        ([url, info]) => info.folder === 'images' || info.folder === 'fonts'
+        ([url, info]) =>
+          info.folder === 'images' ||
+          info.folder === 'fonts' ||
+          info.folder === 'media' ||
+          info.folder === 'other'
       );
       if (replaceableAssets.length > 0) {
         for (const jsAsset of jsRecords) {
@@ -1093,13 +1395,39 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
                 jsContent = jsContent.split(remoteUrl).join(info.relativePath);
                 modified = true;
               }
+              try {
+                const u = new URL(remoteUrl);
+                if (u.pathname && u.pathname.length > 4 && jsContent.includes(u.pathname)) {
+                  jsContent = jsContent.split(`"${u.pathname}"`).join(`"${info.relativePath}"`);
+                  jsContent = jsContent.split(`'${u.pathname}'`).join(`'${info.relativePath}'`);
+                  jsContent = jsContent.split(`\`${u.pathname}\``).join(`\`${info.relativePath}\``);
+                  modified = true;
+                }
+              } catch {}
             }
             if (modified) {
               fs.writeFileSync(jsAsset.diskPath, jsContent, 'utf8');
+              if (jsAsset.originalFilename && jsAsset.originalFilename !== jsAsset.filename) {
+                const hashedCopy = path.join(siteDir, 'assets', 'js', jsAsset.filename);
+                if (fs.existsSync(hashedCopy)) {
+                  fs.writeFileSync(hashedCopy, jsContent, 'utf8');
+                }
+              }
             }
           } catch {}
         }
       }
+
+      // Build Universal Offline VFS (`assets/js/__cloner_vfs.js`) for ES modules & 3D/Lottie binary assets
+      hasVfs = buildUniversalOfflineVfs(siteDir, assetMap);
+    }
+
+    // Write final HTML files with VFS + Runtime Enhancer injected
+    for (const pageItem of capturedPages) {
+      const $ = pageItem.$;
+      injectClonerRuntimeEnhancer($, hasVfs, pageItem.deferredModuleEntries || []);
+      const outHtmlPath = path.join(siteDir, pageItem.filename);
+      fs.writeFileSync(outHtmlPath, $.html(), 'utf8');
     }
 
     await context.close();
