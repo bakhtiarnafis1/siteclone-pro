@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "name": "siteclone-pro",
+  "installCommand": "echo 'Skipping backend install for static frontend'",
+  "buildCommand": "echo 'Frontend ready'",
+  "outputDirectory": "public",
+  "cleanUrls": true
+}

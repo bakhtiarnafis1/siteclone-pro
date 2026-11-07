@@ -1,0 +1,7 @@
+node_modules
+storage/sites/*
+storage/zips/*
+storage/history.json
+.vercel
+.git
+*.log
