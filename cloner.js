@@ -165,6 +165,15 @@ function normalizePageUrl(rawUrl, baseUrl) {
   try {
     const u = new URL(rawUrl, baseUrl);
     if (!['http:', 'https:'].includes(u.protocol)) return null;
+    // Skip action/mutation query links & backend endpoints (e.g. WooCommerce ?add-to-cart=, WordPress wp-json/feed)
+    if (
+      u.searchParams.has('add-to-cart') ||
+      u.searchParams.has('remove_item') ||
+      u.searchParams.has('replytocom') ||
+      /\/(wp-admin|wp-login\.php|wp-json|xmlrpc\.php|feed|cart\/?\?)/i.test(u.pathname + u.search)
+    ) {
+      return null;
+    }
     u.hash = '';
     // Strip trailing slash except for root "/"
     if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
@@ -229,7 +238,7 @@ function parseUserCookies(cookieInput, targetUrl) {
  * Auto-scroll the page smoothly to trigger lazy images, IntersectionObservers, and scroll animations.
  * Instantly skips scrolling on single-viewport (100vh) pages and enforces a strict 3.5s max timeout.
  */
-async function autoScrollPage(page) {
+async function autoScrollPage(page, capMs = 11000) {
   try {
     const metrics = await page
       .evaluate(() => ({
@@ -245,7 +254,7 @@ async function autoScrollPage(page) {
     const maxTimeoutMs =
       metrics.totalHeight <= metrics.viewHeight * 1.15
         ? 1200
-        : Math.min(Math.max(Math.ceil(metrics.totalHeight / 900) * 900, 4500), 11000);
+        : Math.min(Math.max(Math.ceil(metrics.totalHeight / 900) * 900, 4500), capMs);
 
     await Promise.race([
       page.evaluate(async () => {
@@ -583,7 +592,20 @@ async function normalizeRenderedDomForClone(page) {
         rootEl.innerHTML = window.__clonerSavedRootHtml;
       }
 
-      // 5. Hide loading overlays (e.g. `.loader`, `.loader.is-done`) and remove `.stage-fallback` so 3D VFS boots cleanly
+      // 5. Hide loading overlays (e.g. `.loader`, `.loader.is-done`), close timed `<dialog open>` promo popups triggered during scroll, and remove `.stage-fallback`
+      document.querySelectorAll('dialog[open]').forEach((dlg) => {
+        try {
+          dlg.close();
+        } catch {}
+        dlg.removeAttribute('open');
+      });
+      if (document.body && document.body.classList) {
+        Array.from(document.body.classList).forEach((cls) => {
+          if (cls.endsWith('-open') || cls === 'modal-open' || cls === 'popup-open') {
+            document.body.classList.remove(cls);
+          }
+        });
+      }
       document.querySelectorAll('.loader, .loader.is-done, [class*="loader"][class*="done"]').forEach((loader) => {
         loader.classList.add('is-done');
         loader.style.opacity = '0';
@@ -674,54 +696,53 @@ async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, d
     }
   }
 
-  let updatedCss = cssText;
-  for (const match of matches) {
-    const fullMatch = match[0];
-    const rawRef = (match[2] || '').trim();
-    if (!rawRef || rawRef.startsWith('data:') || rawRef.startsWith('#')) continue;
-
+  // Single-pass replace (O(n)) instead of repeated split/join over the whole stylesheet per match,
+  // which allocated hundreds of MB on large CSS bundles and crashed 50-page jobs with heap OOM.
+  return cssText.replace(urlRegex, (fullMatch, _q, ref) => {
+    const rawRef = (ref || '').trim();
+    if (!rawRef || rawRef.startsWith('data:') || rawRef.startsWith('#')) return fullMatch;
     try {
       const resolvedUrl = new URL(rawRef, cssBaseUrl).toString();
       const assetInfo = assetMap.get(resolvedUrl);
-      if (assetInfo) {
-        // Inline webfont files (<= 350KB) as data: URIs so Chrome/Edge file:// NEVER blocks custom fonts with origin 'null' CORS!
-        if (assetInfo.folder === 'fonts' && assetInfo.diskPath) {
-          if (!assetInfo.dataUri) {
-            try {
-              const stat = fs.statSync(assetInfo.diskPath);
-              if (stat.size > 0 && stat.size <= 350 * 1024) {
-                const ext = path.extname(assetInfo.diskPath).toLowerCase();
-                const mime =
-                  ext === '.woff2'
-                    ? 'font/woff2'
-                    : ext === '.woff'
-                    ? 'font/woff'
-                    : ext === '.ttf'
-                    ? 'font/ttf'
-                    : ext === '.otf'
-                    ? 'font/otf'
-                    : 'font/woff2';
-                assetInfo.dataUri = `data:${mime};base64,${fs.readFileSync(assetInfo.diskPath).toString('base64')}`;
-              }
-            } catch {}
-          }
-          if (assetInfo.dataUri) {
-            updatedCss = updatedCss.split(fullMatch).join(`url("${assetInfo.dataUri}")`);
-            continue;
-          }
+      if (!assetInfo) return fullMatch;
+
+      // Inline webfont files (<= 350KB) & CSS SVG masks/icons (<= 150KB) as data: URIs
+      // so Chrome/Edge file:// NEVER blocks custom fonts or CSS mask:url(*.svg) cart/UI icons with origin 'null' CORS!
+      if ((assetInfo.folder === 'fonts' || (assetInfo.folder === 'images' && assetInfo.diskPath?.toLowerCase().endsWith('.svg'))) && assetInfo.diskPath) {
+        if (assetInfo.dataUri === undefined) {
+          assetInfo.dataUri = null;
+          try {
+            const stat = fs.statSync(assetInfo.diskPath);
+            const ext = path.extname(assetInfo.diskPath).toLowerCase();
+            const maxBytes = ext === '.svg' ? 150 * 1024 : 350 * 1024;
+            if (stat.size > 0 && stat.size <= maxBytes) {
+              const mime =
+                ext === '.svg'
+                  ? 'image/svg+xml'
+                  : ext === '.woff2'
+                  ? 'font/woff2'
+                  : ext === '.woff'
+                  ? 'font/woff'
+                  : ext === '.ttf'
+                  ? 'font/ttf'
+                  : ext === '.otf'
+                  ? 'font/otf'
+                  : 'font/woff2';
+              assetInfo.dataUri = `data:${mime};base64,${fs.readFileSync(assetInfo.diskPath).toString('base64')}`;
+            }
+          } catch {}
         }
-
-        const fileTarget = assetInfo.originalFilename || assetInfo.filename;
-        const relPath =
-          depthPrefix === '../'
-            ? `../${assetInfo.folder}/${fileTarget}`
-            : assetInfo.relativePath;
-        updatedCss = updatedCss.split(fullMatch).join(`url("${relPath}")`);
+        if (assetInfo.dataUri) return `url("${assetInfo.dataUri}")`;
       }
-    } catch {}
-  }
 
-  return updatedCss;
+      const fileTarget = assetInfo.originalFilename || assetInfo.filename;
+      const relPath =
+        depthPrefix === '../' ? `../${assetInfo.folder}/${fileTarget}` : assetInfo.relativePath;
+      return `url("${relPath}")`;
+    } catch {
+      return fullMatch;
+    }
+  });
 }
 
 /**
@@ -1396,6 +1417,11 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
 })();
 </script>`;
 
+  // String mode: return the snippets so already-written HTML files can be patched via cheap marker replacement
+  if (!$) {
+    return { vfsBootHead, runtimeCss, runtimeScript };
+  }
+
   // Prepend VFS bootloader at the VERY TOP of <head> so shims execute BEFORE any Next.js / Webpack / Vite <script> tag!
   if ($('head').length) {
     $('head').prepend(vfsBootHead);
@@ -1417,7 +1443,7 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
 function createZipArchive(sourceDir, zipFilePath) {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(zipFilePath);
-    const archive = archiver('zip', { zlib: { level: 6 } });
+    const archive = archiver('zip', { zlib: { level: 3 } });
 
     output.on('close', () => resolve(archive.pointer()));
     archive.on('error', (err) => reject(err));
@@ -1506,18 +1532,6 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     const diskPath = path.join(siteDir, 'assets', classified.folder, primaryFilename);
     try {
       fs.writeFileSync(diskPath, buffer);
-      // Only write hashed duplicate for small JS modules (< 1MB) where both names may be referenced
-      if (
-        classified.folder === 'js' &&
-        buffer.length <= 1024 * 1024 &&
-        classified.originalFilename &&
-        classified.originalFilename !== classified.filename
-      ) {
-        const hashedDiskPath = path.join(siteDir, 'assets', classified.folder, classified.filename);
-        if (!fs.existsSync(hashedDiskPath)) {
-          fs.writeFileSync(hashedDiskPath, buffer);
-        }
-      }
       const record = { ...classified, diskPath, baseUrl: assetUrl };
       assetMap.set(assetUrl, record);
       return record;
@@ -1649,49 +1663,99 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       }
     }
 
-    const page = await context.newPage();
+    // Raw captured HTML is spooled to disk (not kept in RAM) so 50-page jobs stay within 512MB containers
+    const rawDir = path.join(siteDir, '.cloner-raw');
+    fs.mkdirSync(rawDir, { recursive: true });
 
-    // Defer heavy 3D/WebGL binary files (.glb, .gltf, .splinecode, .hdr, .bin, .wasm) out of headless SwiftShader
-    // so 512MB containers never OOM-crash or freeze unpacking 15MB 3D meshes on CPU; Node.js downloads them directly after browser.close()!
-    await page.route(/\.(glb|gltf|splinecode|hdr|bin|wasm|lottie|rive)(\?.*)?$/i, async (route) => {
-      const reqUrl = route.request().url();
-      if (reqUrl.startsWith('http')) {
-        deferredBinaryUrls.add(reqUrl);
-      }
-      // Hold request briefly while DOM settles so SPA doesn't flash an error state before page.content() is captured
-      await new Promise((r) => setTimeout(r, 2500));
-      try {
-        await route.abort();
-      } catch {}
-    });
+    // Pages 2..N: block image/media/font downloads INSIDE Chromium (Node.js fetches the exact referenced files later),
+    // cutting per-page CPU, bandwidth & renderer RAM by ~60-80% on slow free-tier containers.
+    let blockHeavyResources = false;
 
-    // Intercept all network responses to save exact CSS, JS, Fonts & Images loaded by the browser
-    page.on('response', async (response) => {
-      try {
-        if (!saveAssets) return;
-        const reqUrl = response.url();
-        if (!reqUrl.startsWith('http') || assetMap.has(reqUrl) || deferredBinaryUrls.has(reqUrl)) return;
-        const status = response.status();
-        if (status < 200 || status >= 300) return;
+    const setupPage = async () => {
+      const pg = await context.newPage();
 
-        const contentType = response.headers()['content-type'] || '';
-        const classified = classifyAsset(reqUrl, contentType);
-        if (!classified) return;
+      // Defer heavy 3D/WebGL binary files (.glb, .gltf, .splinecode, .hdr, .bin, .wasm) out of headless SwiftShader
+      // so 512MB containers never OOM-crash or freeze unpacking 15MB 3D meshes on CPU; Node.js downloads them directly after browser.close()!
+      await pg.route(/\.(glb|gltf|splinecode|hdr|bin|wasm|lottie|rive)(\?.*)?$/i, async (route) => {
+        const reqUrl = route.request().url();
+        if (reqUrl.startsWith('http')) {
+          deferredBinaryUrls.add(reqUrl);
+        }
+        // Hold request briefly while DOM settles so SPA doesn't flash an error state before page.content() is captured
+        await new Promise((r) => setTimeout(r, blockHeavyResources ? 600 : 2500));
+        try {
+          await route.abort();
+        } catch {}
+      });
 
-        const buffer = await response.body();
-        saveBufferAsAsset(reqUrl, buffer, contentType);
-      } catch {
-        // Ignore body read errors on redirected/preflight requests
-      }
-    });
+      await pg.route('**/*', async (route) => {
+        try {
+          const type = route.request().resourceType();
+          if (blockHeavyResources && (type === 'image' || type === 'media' || type === 'font')) {
+            return await route.abort();
+          }
+          return await route.fallback();
+        } catch {}
+      });
+
+      // Intercept all network responses to save exact CSS, JS, Fonts & Images loaded by the browser
+      pg.on('response', async (response) => {
+        try {
+          if (!saveAssets) return;
+          const reqUrl = response.url();
+          if (!reqUrl.startsWith('http') || assetMap.has(reqUrl) || deferredBinaryUrls.has(reqUrl)) return;
+          const status = response.status();
+          if (status < 200 || status >= 300) return;
+
+          const contentType = response.headers()['content-type'] || '';
+          const classified = classifyAsset(reqUrl, contentType);
+          if (!classified) return;
+
+          const buffer = await response.body();
+          saveBufferAsAsset(reqUrl, buffer, contentType);
+        } catch {
+          // Ignore body read errors on redirected/preflight requests
+        }
+      });
+      return pg;
+    };
+
+    let page = await setupPage();
+
+    // Hard time budget for crawling: if the site is huge/slow, finish with the pages captured so far
+    // (partial success + ZIP) instead of running 15 minutes and failing.
+    const crawlStartedAt = Date.now();
+    const CRAWL_BUDGET_MS = maxPages > 1 ? 7 * 60 * 1000 : 3 * 60 * 1000;
+    let budgetExceeded = false;
 
     // Crawl loop (1 page for Single mode, up to 50 pages for Full / Auth mode)
     while (pageQueue.length > 0 && visitedPages.size < maxPages) {
+      if (visitedPages.size > 0 && Date.now() - crawlStartedAt > CRAWL_BUDGET_MS) {
+        budgetExceeded = true;
+        emitProgress({
+          pct: 76,
+          pages: capturedPages.length,
+          assets: assetMap.size,
+          title: `Time limit reached — packaging ${capturedPages.length} captured page(s)…`,
+          log: `Crawl time budget reached; finishing with ${capturedPages.length} page(s) instead of failing.`,
+          type: 'warn',
+        });
+        break;
+      }
+
       const currentUrl = pageQueue.shift();
       if (!currentUrl || visitedPages.has(currentUrl)) continue;
 
       const pageIndex = visitedPages.size;
       visitedPages.add(currentUrl);
+
+      // Recycle the tab every 8 pages so Chromium renderer memory never accumulates across 50 pages
+      if (pageIndex > 0 && pageIndex % 8 === 0) {
+        await page.close().catch(() => {});
+        page = await setupPage();
+      }
+      blockHeavyResources = pageIndex > 0;
+      const isFirstPage = pageIndex === 0;
 
       const localFilename =
         pageFileMap.get(currentUrl) || pageUrlToFilename(currentUrl, rootOrigin, pageIndex);
@@ -1710,12 +1774,12 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       try {
         await page.goto(currentUrl, {
           waitUntil: 'domcontentloaded',
-          timeout: 22000,
+          timeout: isFirstPage ? 22000 : 15000,
         });
 
-        // Wait up to 1.4s for window 'load' or initial network burst, then 500ms for React/Next/Framer hydration
-        await page.waitForLoadState('load', { timeout: 1400 }).catch(() => {});
-        await page.waitForTimeout(500);
+        // Wait for window 'load' / initial network burst, then for React/Next/Framer hydration
+        await page.waitForLoadState('load', { timeout: isFirstPage ? 1400 : 800 }).catch(() => {});
+        await page.waitForTimeout(isFirstPage ? 500 : 250);
 
         if (autoScroll) {
           emitProgress({
@@ -1726,13 +1790,13 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
             log: `Checking lazy content & scroll animations on ${localFilename}`,
             type: 'info',
           });
-          await autoScrollPage(page);
+          await autoScrollPage(page, isFirstPage ? 11000 : 3500);
         }
 
         // Normalize DOM styles & capture lightweight 2D canvases
-        await page.waitForTimeout(200);
+        await page.waitForTimeout(isFirstPage ? 200 : 100);
         await inlineDynamicCssomStyles(page);
-        if (deferredBinaryUrls.size === 0) {
+        if (deferredBinaryUrls.size === 0 && isFirstPage) {
           await captureCanvasSnapshots(page, saveBufferAsAsset, currentUrl);
         }
         await normalizeRenderedDomForClone(page);
@@ -1740,16 +1804,19 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         const finalPageUrl = page.url() || currentUrl;
         const renderedHtml = await page.content();
 
+        const rawPath = path.join(rawDir, `${capturedPages.length}.html`);
+        fs.writeFileSync(rawPath, renderedHtml, 'utf8');
         capturedPages.push({
           url: currentUrl,
           finalUrl: finalPageUrl,
           filename: localFilename,
-          html: renderedHtml,
+          rawPath,
         });
 
         // If multi-page mode is active and we need more pages, discover internal links
-        if (maxPages > 1 && pageFileMap.size < maxPages * 2) {
-          const $ = cheerio.load(renderedHtml);
+        const discoverInternalLinks = (htmlStr, baseUrl) => {
+          if (maxPages <= 1 || pageFileMap.size >= maxPages * 2) return;
+          const $ = cheerio.load(htmlStr);
           $('a[href]').each((_, el) => {
             const rawHref = ($(el).attr('href') || '').trim();
             if (
@@ -1762,7 +1829,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               return;
             }
 
-            const norm = normalizePageUrl(rawHref, finalPageUrl);
+            const norm = normalizePageUrl(rawHref, baseUrl);
             if (!norm) return;
 
             try {
@@ -1793,6 +1860,37 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               }
             } catch {}
           });
+        };
+
+        discoverInternalLinks(renderedHtml, finalPageUrl);
+
+        // Hybrid Fast Multi-Page Mode: after capturing Page 1 in Chromium (with full CSS/JS/font/animation capture),
+        // probe Page 2 via HTTP fetch. If the site serves SSR/static HTML (WordPress, WooCommerce, Elementor, Next.js,
+        // Framer, Webflow, Shopify, Astro, etc.), close Chromium immediately to free ~180MB RAM and crawl Pages 2..50
+        // in parallel HTTP batches (10x faster and OOM-proof on 512MB containers!).
+        if (isFirstPage && maxPages > 1 && pageQueue.length > 0 && deferredBinaryUrls.size === 0) {
+          try {
+            const probeUrl = pageQueue[0];
+            const probeHeaders = {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              Accept: 'text/html,application/xhtml+xml',
+            };
+            if (cookies && cookies.trim()) probeHeaders.Cookie = cookies.trim();
+            const probeCtrl = new AbortController();
+            const probeTimer = setTimeout(() => probeCtrl.abort(), 8000);
+            const probeRes = await fetch(probeUrl, { headers: probeHeaders, signal: probeCtrl.signal });
+            clearTimeout(probeTimer);
+            if (probeRes.ok && (probeRes.headers.get('content-type') || '').includes('text/html')) {
+              const probeHtml = await probeRes.text();
+              const $probe = cheerio.load(probeHtml);
+              const bodyTextLen = ($probe('body').text() || '').replace(/\s+/g, ' ').trim().length;
+              if (bodyTextLen >= 140) {
+                pageQueue.__useFastHttpSubpages = true;
+                break;
+              }
+            }
+          } catch {}
         }
       } catch (pageErr) {
         emitProgress({
@@ -1808,8 +1906,115 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
 
     await context.close().catch(() => {});
   } finally {
-    // Close Chromium IMMEDIATELY after Step 1 so 150-200MB of RAM is freed before DOM processing, 3D downloads & VFS bundling!
+    // Close Chromium IMMEDIATELY after Step 1 so 150-200MB of RAM is freed before sub-page fetching, DOM processing & ZIP!
     await browser.close().catch(() => {});
+  }
+
+  // If Hybrid Fast Multi-Page Mode is active, crawl remaining pages (2..maxPages) in parallel HTTP batches now that Chromium is closed!
+  if (pageQueue.__useFastHttpSubpages && pageQueue.length > 0 && visitedPages.size < maxPages) {
+    const rawDir = path.join(siteDir, '.cloner-raw');
+    const fetchSubPage = async (targetUrl) => {
+      const pageIndex = visitedPages.size;
+      visitedPages.add(targetUrl);
+      const localFilename =
+        pageFileMap.get(targetUrl) || pageUrlToFilename(targetUrl, rootOrigin, pageIndex);
+      pageFileMap.set(targetUrl, localFilename);
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        const headers = {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml',
+        };
+        if (cookies && cookies.trim()) headers.Cookie = cookies.trim();
+        const res = await fetch(targetUrl, { headers, signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) return;
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('text/html') && !ct.includes('application/xhtml')) return;
+
+        const htmlStr = await res.text();
+        const finalPageUrl = res.url || targetUrl;
+        const rawPath = path.join(rawDir, `${capturedPages.length}.html`);
+        fs.writeFileSync(rawPath, htmlStr, 'utf8');
+        capturedPages.push({
+          url: targetUrl,
+          finalUrl: finalPageUrl,
+          filename: localFilename,
+          rawPath,
+        });
+
+        const basePct = 14 + Math.round((capturedPages.length / maxPages) * 62);
+        emitProgress({
+          pct: Math.min(basePct, 76),
+          pages: capturedPages.length,
+          assets: assetMap.size,
+          title: `Capturing page ${capturedPages.length} of ${maxPages}…`,
+          log: `Captured ${targetUrl} -> ${localFilename}`,
+          type: 'step',
+        });
+
+        // Discover additional internal links if we still need more pages to reach maxPages
+        if (visitedPages.size + pageQueue.length < maxPages) {
+          const $ = cheerio.load(htmlStr);
+          $('a[href]').each((_, el) => {
+            const rawHref = ($(el).attr('href') || '').trim();
+            if (
+              !rawHref ||
+              rawHref.startsWith('#') ||
+              rawHref.startsWith('mailto:') ||
+              rawHref.startsWith('tel:') ||
+              rawHref.startsWith('javascript:')
+            ) {
+              return;
+            }
+            const norm = normalizePageUrl(rawHref, finalPageUrl);
+            if (!norm) return;
+            try {
+              const linkObj = new URL(norm);
+              if (sameDomain && linkObj.origin !== rootOrigin) return;
+              const ext = path.extname(linkObj.pathname).toLowerCase();
+              if (
+                [
+                  '.pdf', '.zip', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+                  '.webp', '.mp4', '.mp3', '.css', '.js', '.xml', '.json',
+                ].includes(ext)
+              ) {
+                return;
+              }
+              if (!visitedPages.has(norm) && !pageQueue.includes(norm)) {
+                if (visitedPages.size + pageQueue.length < maxPages) {
+                  const assignedFile = pageUrlToFilename(
+                    norm,
+                    rootOrigin,
+                    visitedPages.size + pageQueue.length
+                  );
+                  pageFileMap.set(norm, assignedFile);
+                  pageQueue.push(norm);
+                }
+              }
+            } catch {}
+          });
+        }
+      } catch {
+        clearTimeout(timer);
+      }
+    };
+
+    while (pageQueue.length > 0 && visitedPages.size < maxPages) {
+      const remainingNeeded = maxPages - visitedPages.size;
+      const batch = [];
+      while (batch.length < Math.min(6, remainingNeeded) && pageQueue.length > 0) {
+        const nextUrl = pageQueue.shift();
+        if (nextUrl && !visitedPages.has(nextUrl)) {
+          batch.push(nextUrl);
+        }
+      }
+      if (batch.length === 0) break;
+      await Promise.all(batch.map((u) => fetchSubPage(u)));
+    }
   }
 
   if (capturedPages.length === 0) {
@@ -1827,12 +2032,29 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
   });
 
     for (const pageItem of capturedPages) {
-      const $ = cheerio.load(pageItem.html);
+      const $ = cheerio.load(fs.readFileSync(pageItem.rawPath, 'utf8'));
       const basePageUrl = pageItem.finalUrl || pageItem.url;
 
-      // Remove base or CSP tags that break offline viewing
+      // Remove base or CSP tags that break offline viewing, and normalize lazy attributes / open promo dialogs on all pages
       $('base').remove();
       $('meta[http-equiv="Content-Security-Policy"]').remove();
+      $('dialog[open]').removeAttr('open');
+      $('.elementor-invisible').removeClass('elementor-invisible');
+      $('img[data-src], img[data-lazy-src], source[data-src]').each((_, el) => {
+        const ds = $(el).attr('data-src') || $(el).attr('data-lazy-src');
+        if (ds && !$(el).attr('src')) $(el).attr('src', ds);
+      });
+      $('img[data-srcset], source[data-srcset]').each((_, el) => {
+        const dss = $(el).attr('data-srcset');
+        if (dss && !$(el).attr('srcset')) $(el).attr('srcset', dss);
+      });
+      $('[data-bg], [data-background-image]').each((_, el) => {
+        const bg = $(el).attr('data-bg') || $(el).attr('data-background-image');
+        const st = $(el).attr('style') || '';
+        if (bg && !st.includes('background-image')) {
+          $(el).attr('style', `${st ? st.replace(/;+\s*$/, '') + '; ' : ''}background-image: url("${bg}");`);
+        }
+      });
 
       if (saveAssets) {
         // 0. Batch pre-fetch all uncached page assets concurrently in parallel (cuts Step 2 from ~23s to ~1.5s!)
@@ -1891,8 +2113,14 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               $(el).removeAttr('integrity');
               $(el).removeAttr('crossorigin');
 
-              // Also inline stylesheet content into <style data-cloner-inlined-css> so CSS works even if opened inside an unextracted ZIP
-              if (saved.folder === 'css' && ($(el).attr('rel') === 'stylesheet' || $(el).attr('as') === 'style')) {
+              // Also inline stylesheet content into <style data-cloner-inlined-css> (single-page clones only).
+              // For multi-page clones the shared assets/css/*.css file is used instead of duplicating the full CSS
+              // (+ embedded fonts) into all 50 pages, which previously blew up memory and ZIP size.
+              if (
+                capturedPages.length === 1 &&
+                saved.folder === 'css' &&
+                ($(el).attr('rel') === 'stylesheet' || $(el).attr('as') === 'style')
+              ) {
                 try {
                   const rawCss = fs.readFileSync(saved.diskPath, 'utf8');
                   const inlinedCss = rawCss.includes('url(')
@@ -1991,8 +2219,8 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
           } catch {}
         }
 
-        // 5. Inline <style> blocks with url(...)
-        const inlineStyles = $('style').toArray();
+        // 5. Inline <style> blocks with url(...) (skip our own already-rewritten inlined stylesheets)
+        const inlineStyles = $('style:not([data-cloner-inlined-css])').toArray();
         for (const el of inlineStyles) {
           const cssContent = $(el).html() || '';
           if (cssContent.includes('url(') && rewriteLinks) {
@@ -2049,9 +2277,27 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         });
       }
 
-      // Temporarily store processed Cheerio instance so we can inject VFS after Step 3 rewrites JS/CSS
-      pageItem.$ = $;
+      // Write the processed page to disk right away with lightweight markers (runtime/VFS snippets are
+      // patched in after Step 3), then release the DOM so memory stays flat no matter how many pages.
+      if ($('head').length) {
+        $('head').prepend('<!--CLONER_HEAD_TOP-->');
+        $('head').append('<!--CLONER_HEAD_END-->');
+      } else {
+        $.root().prepend('<!--CLONER_HEAD_TOP--><!--CLONER_HEAD_END-->');
+      }
+      if ($('body').length) {
+        $('body').append('<!--CLONER_BODY_END-->');
+      } else {
+        $.root().append('<!--CLONER_BODY_END-->');
+      }
+      fs.writeFileSync(path.join(siteDir, pageItem.filename), $.html(), 'utf8');
+      try {
+        fs.unlinkSync(pageItem.rawPath);
+      } catch {}
     }
+    try {
+      fs.rmSync(path.join(siteDir, '.cloner-raw'), { recursive: true, force: true });
+    } catch {}
 
     // Step 3: Rewrite url(...) inside all saved CSS files and remote/root-relative asset URLs inside JS/MJS modules
     let hasVfs = false;
@@ -2159,12 +2405,18 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       hasVfs = buildUniversalOfflineVfs(siteDir, assetMap, needsEsModuleBundle);
     }
 
-    // Write final HTML files with VFS + Runtime Enhancer injected
+    // Patch final HTML files with VFS + Runtime Enhancer snippets via cheap marker replacement (no re-parse)
     for (const pageItem of capturedPages) {
-      const $ = pageItem.$;
-      injectClonerRuntimeEnhancer($, hasVfs, pageItem.deferredModuleEntries || []);
+      const parts = injectClonerRuntimeEnhancer(null, hasVfs, pageItem.deferredModuleEntries || []);
       const outHtmlPath = path.join(siteDir, pageItem.filename);
-      fs.writeFileSync(outHtmlPath, $.html(), 'utf8');
+      try {
+        const html = fs.readFileSync(outHtmlPath, 'utf8');
+        const patched = html
+          .split('<!--CLONER_HEAD_TOP-->').join(parts.vfsBootHead)
+          .split('<!--CLONER_HEAD_END-->').join(parts.runtimeCss)
+          .split('<!--CLONER_BODY_END-->').join(parts.runtimeScript);
+        fs.writeFileSync(outHtmlPath, patched, 'utf8');
+      } catch {}
     }
 
   // Step 4: Package everything into a clean ZIP archive
