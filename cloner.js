@@ -988,20 +988,27 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       }
     };
 
+    const failedAssetUrls = new Set();
+
     // Helper to explicitly fetch & save an asset URL that wasn't caught by network listener
     const fetchAndSaveAsset = async (assetUrl) => {
       if (!saveAssets || !assetUrl || assetUrl.startsWith('data:') || assetUrl.startsWith('blob:')) {
         return null;
       }
       if (assetMap.has(assetUrl)) return assetMap.get(assetUrl);
+      if (failedAssetUrls.has(assetUrl)) return null;
 
       try {
-        const res = await context.request.get(assetUrl, { timeout: 10000, failOnStatusCode: false });
-        if (!res.ok()) return null;
+        const res = await context.request.get(assetUrl, { timeout: 4500, failOnStatusCode: false });
+        if (!res.ok()) {
+          failedAssetUrls.add(assetUrl);
+          return null;
+        }
         const contentType = res.headers()['content-type'] || '';
         const buffer = await res.body();
         return saveBufferAsAsset(assetUrl, buffer, contentType);
       } catch {
+        failedAssetUrls.add(assetUrl);
         return null;
       }
     };
@@ -1459,7 +1466,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     sizeBytes: zipBytes,
     sizeFormatted,
     previewUrl: `/preview/${jobId}/index.html`,
-    zipUrl: `/downloads/${jobId}.zip`,
+    zipUrl: `/downloads/${jobId}.zip?url=${encodeURIComponent(startUrl)}`,
     createdAt: new Date().toISOString(),
   };
 
@@ -1477,4 +1484,4 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
   return summary;
 }
 
-module.exports = { runCloneJob };
+module.exports = { runCloneJob, createZipArchive };
