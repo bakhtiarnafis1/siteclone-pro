@@ -4,8 +4,7 @@ FROM mcr.microsoft.com/playwright:v1.50.0-noble
 WORKDIR /app
 
 COPY package*.json ./
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-RUN npm install --omit=dev
+RUN npm install --omit=dev && npx playwright install chromium
 
 COPY . .
 
