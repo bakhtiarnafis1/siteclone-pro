@@ -15,7 +15,7 @@ async function launchBrowser() {
     { channel: 'chrome', headless: true },
   ];
 
-  // Keep SwiftShader / software WebGL active so Three.js & 3D WebGL sites render in headless containers
+  // Keep SwiftShader / software WebGL active for lightweight canvases while capping Chromium memory for 512MB containers
   const launchArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -23,6 +23,12 @@ async function launchBrowser() {
     '--enable-webgl',
     '--ignore-gpu-blocklist',
     '--enable-unsafe-swiftshader',
+    '--js-flags=--max-old-space-size=192',
+    '--renderer-process-limit=2',
+    '--disable-background-networking',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-sync',
   ];
 
   let lastErr;
@@ -220,44 +226,62 @@ function parseUserCookies(cookieInput, targetUrl) {
 }
 
 /**
- * Auto-scroll the page smoothly to trigger lazy images, IntersectionObservers, and scroll animations
+ * Auto-scroll the page smoothly to trigger lazy images, IntersectionObservers, and scroll animations.
+ * Instantly skips scrolling on single-viewport (100vh) pages and enforces a strict 3.5s max timeout.
  */
 async function autoScrollPage(page) {
-  await page.evaluate(async () => {
-    // Force lazy images and iframes to eager load
-    document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]').forEach((el) => {
-      el.setAttribute('loading', 'eager');
-    });
-    document.querySelectorAll('img[data-src], img[data-lazy-src]').forEach((img) => {
-      const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
-      if (dataSrc && !img.getAttribute('src')) {
-        img.setAttribute('src', dataSrc);
-      }
-    });
+  try {
+    await Promise.race([
+      page.evaluate(async () => {
+        // Force lazy images and iframes to eager load
+        document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]').forEach((el) => {
+          el.setAttribute('loading', 'eager');
+        });
+        document.querySelectorAll('img[data-src], img[data-lazy-src]').forEach((img) => {
+          const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+          if (dataSrc && !img.getAttribute('src')) {
+            img.setAttribute('src', dataSrc);
+          }
+        });
 
-    await new Promise((resolve) => {
-      let currentScroll = 0;
-      const step = 420;
-      const maxScrollHeight = Math.min(document.body.scrollHeight || 12000, 22000);
+        const totalHeight = Math.max(
+          document.body ? document.body.scrollHeight : 0,
+          document.documentElement ? document.documentElement.scrollHeight : 0
+        );
+        const viewHeight = window.innerHeight || 900;
 
-      // Scroll down smoothly so IntersectionObservers trigger on every section
-      const downTimer = setInterval(() => {
-        window.scrollBy(0, step);
-        currentScroll += step;
-        if (currentScroll >= maxScrollHeight) {
-          clearInterval(downTimer);
-          setTimeout(() => {
-            // Scroll back up in steps so sticky navbars reveal themselves
-            window.scrollBy(0, -600);
-            setTimeout(() => {
-              window.scrollTo(0, 0);
-              setTimeout(resolve, 450);
-            }, 180);
-          }, 350);
+        // Fast-path: If this is a single-section / 100vh page (like Clara Studio), skip scrolling completely!
+        if (totalHeight <= viewHeight * 1.15) {
+          return false;
         }
-      }, 115);
-    });
-  });
+
+        await new Promise((resolve) => {
+          let currentScroll = 0;
+          const step = 650;
+          const maxScrollHeight = Math.min(totalHeight || 10000, 15000);
+
+          // Scroll down rapidly so IntersectionObservers trigger on every section
+          const downTimer = setInterval(() => {
+            window.scrollBy(0, step);
+            currentScroll += step;
+            if (currentScroll >= maxScrollHeight) {
+              clearInterval(downTimer);
+              setTimeout(() => {
+                // Scroll back up so sticky navbars reveal themselves
+                window.scrollBy(0, -600);
+                setTimeout(() => {
+                  window.scrollTo(0, 0);
+                  setTimeout(() => resolve(true), 180);
+                }, 100);
+              }, 150);
+            }
+          }, 60);
+        });
+        return true;
+      }),
+      new Promise((resolve) => setTimeout(() => resolve(false), 3500)),
+    ]);
+  } catch {}
 }
 
 /**
@@ -397,12 +421,14 @@ async function normalizeRenderedDomForClone(page) {
         rootEl.innerHTML = window.__clonerSavedRootHtml;
       }
 
-      // 5. Hide completed loading overlays (e.g. `.loader.is-done`) so they don't block the UI
-      document.querySelectorAll('.loader.is-done, [class*="loader"][class*="done"]').forEach((loader) => {
+      // 5. Hide loading overlays (e.g. `.loader`, `.loader.is-done`) and remove `.stage-fallback` so 3D VFS boots cleanly
+      document.querySelectorAll('.loader, .loader.is-done, [class*="loader"][class*="done"]').forEach((loader) => {
+        loader.classList.add('is-done');
         loader.style.opacity = '0';
         loader.style.pointerEvents = 'none';
         loader.style.display = 'none';
       });
+      document.querySelectorAll('.stage-fallback').forEach((fb) => fb.remove());
 
       // 6. Clean up temporary SSR style attributes
       document.querySelectorAll('[data-cloner-init-style]').forEach((el) => {
@@ -466,8 +492,27 @@ async function captureCanvasSnapshots(page, saveBufferAsAsset, pageUrl) {
 async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, depthPrefix = '../') {
   const urlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
   const matches = [...cssText.matchAll(urlRegex)];
-  let updatedCss = cssText;
+  if (matches.length === 0) return cssText;
 
+  // Pre-fetch all uncached CSS url(...) assets concurrently in parallel for 10x speed
+  if (saveAssetFromUrl) {
+    const missingUrls = new Set();
+    for (const match of matches) {
+      const rawRef = (match[2] || '').trim();
+      if (!rawRef || rawRef.startsWith('data:') || rawRef.startsWith('#')) continue;
+      try {
+        const resolvedUrl = new URL(rawRef, cssBaseUrl).toString();
+        if (!assetMap.has(resolvedUrl)) {
+          missingUrls.add(resolvedUrl);
+        }
+      } catch {}
+    }
+    if (missingUrls.size > 0) {
+      await Promise.all([...missingUrls].map((u) => saveAssetFromUrl(u).catch(() => null)));
+    }
+  }
+
+  let updatedCss = cssText;
   for (const match of matches) {
     const fullMatch = match[0];
     const rawRef = (match[2] || '').trim();
@@ -475,10 +520,7 @@ async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, d
 
     try {
       const resolvedUrl = new URL(rawRef, cssBaseUrl).toString();
-      let assetInfo = assetMap.get(resolvedUrl);
-      if (!assetInfo && saveAssetFromUrl) {
-        assetInfo = await saveAssetFromUrl(resolvedUrl);
-      }
+      const assetInfo = assetMap.get(resolvedUrl);
       if (assetInfo) {
         const fileTarget = assetInfo.originalFilename || assetInfo.filename;
         const relPath =
@@ -504,6 +546,7 @@ function buildUniversalOfflineVfs(siteDir, assetMap) {
   try {
     const jsDir = path.join(siteDir, 'assets', 'js');
     const otherDir = path.join(siteDir, 'assets', 'other');
+    const vfsPath = path.join(jsDir, '__cloner_vfs.js');
 
     const modules = {};
     if (fs.existsSync(jsDir)) {
@@ -512,7 +555,7 @@ function buildUniversalOfflineVfs(siteDir, assetMap) {
           try {
             const fullPath = path.join(jsDir, file);
             const stat = fs.statSync(fullPath);
-            if (stat.size <= 8 * 1024 * 1024) {
+            if (stat.size <= 5 * 1024 * 1024) {
               modules[file] = fs.readFileSync(fullPath, 'utf8');
             }
           } catch {}
@@ -520,40 +563,59 @@ function buildUniversalOfflineVfs(siteDir, assetMap) {
       }
     }
 
-    const binaryAssets = {};
+    // Write modules dictionary first, then stream each binary asset ONCE with lightweight pointer aliases
+    // so a 10MB .glb is never duplicated 6x in memory or on disk!
+    fs.writeFileSync(
+      vfsPath,
+      `window.__CLONER_MODULES__ = ${JSON.stringify(modules)};\nwindow.__CLONER_BINARY_ASSETS__ = {};\n`,
+      'utf8'
+    );
+
+    let binaryCount = 0;
+    const storedFiles = new Set();
     if (fs.existsSync(otherDir)) {
       for (const file of fs.readdirSync(otherDir)) {
         try {
           const fullPath = path.join(otherDir, file);
           const stat = fs.statSync(fullPath);
-          if (stat.size <= 25 * 1024 * 1024) {
+          if (stat.size <= 20 * 1024 * 1024) {
             const b64 = fs.readFileSync(fullPath).toString('base64');
-            binaryAssets[`assets/other/${file}`] = b64;
-            binaryAssets[file] = b64;
+            const keyLit = JSON.stringify(file);
+            const relLit = JSON.stringify(`assets/other/${file}`);
+            fs.appendFileSync(
+              vfsPath,
+              `window.__CLONER_BINARY_ASSETS__[${keyLit}] = "${b64}";\nwindow.__CLONER_BINARY_ASSETS__[${relLit}] = window.__CLONER_BINARY_ASSETS__[${keyLit}];\n`,
+              'utf8'
+            );
+            storedFiles.add(file);
+            binaryCount++;
           }
         } catch {}
       }
     }
 
-    // Also map original remote URLs and root-relative pathnames (e.g. "/models/clara-rigged.glb") to binaryAssets
+    // Map original remote URLs and root-relative pathnames (e.g. "/models/clara-rigged.glb") by reference (0 extra bytes!)
+    const aliasLines = [];
     for (const [remoteUrl, info] of assetMap.entries()) {
       if (info.folder === 'other') {
-        const key = info.relativePath;
-        if (binaryAssets[key]) {
-          binaryAssets[remoteUrl] = binaryAssets[key];
+        const primaryFile = info.originalFilename || info.filename;
+        if (storedFiles.has(primaryFile)) {
+          const targetRef = `window.__CLONER_BINARY_ASSETS__[${JSON.stringify(primaryFile)}]`;
+          aliasLines.push(`window.__CLONER_BINARY_ASSETS__[${JSON.stringify(remoteUrl)}] = ${targetRef};`);
           try {
             const u = new URL(remoteUrl);
             if (u.pathname) {
-              binaryAssets[u.pathname] = binaryAssets[key];
+              aliasLines.push(`window.__CLONER_BINARY_ASSETS__[${JSON.stringify(u.pathname)}] = ${targetRef};`);
             }
           } catch {}
         }
       }
     }
+    if (aliasLines.length > 0) {
+      fs.appendFileSync(vfsPath, aliasLines.join('\n') + '\n', 'utf8');
+    }
 
-    const vfsJs = `window.__CLONER_MODULES__ = ${JSON.stringify(modules)};\nwindow.__CLONER_BINARY_ASSETS__ = ${JSON.stringify(binaryAssets)};\n`;
-    fs.writeFileSync(path.join(jsDir, '__cloner_vfs.js'), vfsJs, 'utf8');
-    return Object.keys(modules).length > 0 || Object.keys(binaryAssets).length > 0;
+    return Object.keys(modules).length > 0 || binaryCount > 0;
   } catch {
     return false;
   }
@@ -876,6 +938,76 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     type: 'step',
   });
 
+  // Helper to save an asset buffer to disk (defined outside browser block so it works after browser.close())
+  const saveBufferAsAsset = (assetUrl, buffer, contentType = '') => {
+    if (!saveAssets || !buffer || buffer.length === 0) return null;
+    if (assetMap.has(assetUrl)) return assetMap.get(assetUrl);
+
+    const classified = classifyAsset(assetUrl, contentType);
+    if (!classified) return null;
+
+    const primaryFilename = classified.originalFilename || classified.filename;
+    const diskPath = path.join(siteDir, 'assets', classified.folder, primaryFilename);
+    try {
+      fs.writeFileSync(diskPath, buffer);
+      // Only write hashed duplicate for small JS modules (< 1MB) where both names may be referenced
+      if (
+        classified.folder === 'js' &&
+        buffer.length <= 1024 * 1024 &&
+        classified.originalFilename &&
+        classified.originalFilename !== classified.filename
+      ) {
+        const hashedDiskPath = path.join(siteDir, 'assets', classified.folder, classified.filename);
+        if (!fs.existsSync(hashedDiskPath)) {
+          fs.writeFileSync(hashedDiskPath, buffer);
+        }
+      }
+      const record = { ...classified, diskPath, baseUrl: assetUrl };
+      assetMap.set(assetUrl, record);
+      return record;
+    } catch {
+      return null;
+    }
+  };
+
+  const failedAssetUrls = new Set();
+  const deferredBinaryUrls = new Set();
+
+  // Helper to fetch & save an asset URL using native Node.js fetch (works even after Chromium is closed!)
+  const fetchAndSaveAsset = async (assetUrl, timeoutMs = 8000) => {
+    if (!saveAssets || !assetUrl || assetUrl.startsWith('data:') || assetUrl.startsWith('blob:')) {
+      return null;
+    }
+    if (assetMap.has(assetUrl)) return assetMap.get(assetUrl);
+    if (failedAssetUrls.has(assetUrl)) return null;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers = {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      };
+      if (cookies && cookies.trim()) {
+        headers.Cookie = cookies.trim();
+      }
+      const res = await fetch(assetUrl, { headers, signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) {
+        failedAssetUrls.add(assetUrl);
+        return null;
+      }
+      const contentType = res.headers.get('content-type') || '';
+      const arrayBuf = await res.arrayBuffer();
+      const buffer = Buffer.from(arrayBuf);
+      return saveBufferAsAsset(assetUrl, buffer, contentType);
+    } catch {
+      clearTimeout(timer);
+      failedAssetUrls.add(assetUrl);
+      return null;
+    }
+  };
+
   const browser = await launchBrowser();
 
   try {
@@ -961,66 +1093,28 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       }
     }
 
-    // Helper to save an asset buffer to disk
-    const saveBufferAsAsset = (assetUrl, buffer, contentType = '') => {
-      if (!saveAssets || !buffer || buffer.length === 0) return null;
-      if (assetMap.has(assetUrl)) return assetMap.get(assetUrl);
-
-      const classified = classifyAsset(assetUrl, contentType);
-      if (!classified) return null;
-
-      const primaryFilename = classified.originalFilename || classified.filename;
-      const diskPath = path.join(siteDir, 'assets', classified.folder, primaryFilename);
-      try {
-        fs.writeFileSync(diskPath, buffer);
-        // Also write hashed copy if originalFilename was used so both references resolve
-        if (classified.originalFilename && classified.originalFilename !== classified.filename) {
-          const hashedDiskPath = path.join(siteDir, 'assets', classified.folder, classified.filename);
-          if (!fs.existsSync(hashedDiskPath)) {
-            fs.writeFileSync(hashedDiskPath, buffer);
-          }
-        }
-        const record = { ...classified, diskPath, baseUrl: assetUrl };
-        assetMap.set(assetUrl, record);
-        return record;
-      } catch {
-        return null;
-      }
-    };
-
-    const failedAssetUrls = new Set();
-
-    // Helper to explicitly fetch & save an asset URL that wasn't caught by network listener
-    const fetchAndSaveAsset = async (assetUrl) => {
-      if (!saveAssets || !assetUrl || assetUrl.startsWith('data:') || assetUrl.startsWith('blob:')) {
-        return null;
-      }
-      if (assetMap.has(assetUrl)) return assetMap.get(assetUrl);
-      if (failedAssetUrls.has(assetUrl)) return null;
-
-      try {
-        const res = await context.request.get(assetUrl, { timeout: 4500, failOnStatusCode: false });
-        if (!res.ok()) {
-          failedAssetUrls.add(assetUrl);
-          return null;
-        }
-        const contentType = res.headers()['content-type'] || '';
-        const buffer = await res.body();
-        return saveBufferAsAsset(assetUrl, buffer, contentType);
-      } catch {
-        failedAssetUrls.add(assetUrl);
-        return null;
-      }
-    };
-
     const page = await context.newPage();
+
+    // Defer heavy 3D/WebGL binary files (.glb, .gltf, .splinecode, .hdr, .bin, .wasm) out of headless SwiftShader
+    // so 512MB containers never OOM-crash or freeze unpacking 15MB 3D meshes on CPU; Node.js downloads them directly after browser.close()!
+    await page.route(/\.(glb|gltf|splinecode|hdr|bin|wasm|lottie|rive)(\?.*)?$/i, async (route) => {
+      const reqUrl = route.request().url();
+      if (reqUrl.startsWith('http')) {
+        deferredBinaryUrls.add(reqUrl);
+      }
+      // Hold request briefly while DOM settles so SPA doesn't flash an error state before page.content() is captured
+      await new Promise((r) => setTimeout(r, 2500));
+      try {
+        await route.abort();
+      } catch {}
+    });
 
     // Intercept all network responses to save exact CSS, JS, Fonts & Images loaded by the browser
     page.on('response', async (response) => {
       try {
         if (!saveAssets) return;
         const reqUrl = response.url();
-        if (!reqUrl.startsWith('http') || assetMap.has(reqUrl)) return;
+        if (!reqUrl.startsWith('http') || assetMap.has(reqUrl) || deferredBinaryUrls.has(reqUrl)) return;
         const status = response.status();
         if (status < 200 || status >= 300) return;
 
@@ -1060,25 +1154,12 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       try {
         await page.goto(currentUrl, {
           waitUntil: 'domcontentloaded',
-          timeout: 35000,
+          timeout: 22000,
         });
 
-        // Wait for network idle (bundles, fonts, 3D .glb assets) up to 10s
-        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-
-        // Wait for initial client-side hydration (React/Next/Framer/Three.js)
-        await page.waitForTimeout(1800);
-
-        // If the page has an active 3D/Suspense loader (e.g. .loader:not(.is-done)), wait up to 3s for it to finish
-        await page
-          .waitForFunction(
-            () => {
-              const loader = document.querySelector('.loader:not(.is-done)');
-              return !loader;
-            },
-            { timeout: 3000 }
-          )
-          .catch(() => {});
+        // Wait up to 1.4s for window 'load' or initial network burst, then 500ms for React/Next/Framer hydration
+        await page.waitForLoadState('load', { timeout: 1400 }).catch(() => {});
+        await page.waitForTimeout(500);
 
         if (autoScroll) {
           emitProgress({
@@ -1086,16 +1167,18 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
             pages: pageIndex + 1,
             assets: assetMap.size,
             title: `Scrolling page ${pageIndex + 1} for lazy content & animations…`,
-            log: `Auto-scrolling ${localFilename} to trigger lazy images & scroll animations`,
+            log: `Checking lazy content & scroll animations on ${localFilename}`,
             type: 'info',
           });
           await autoScrollPage(page);
         }
 
-        // Wait for newly triggered network images/fonts, snapshot 3D/WebGL canvases & normalize DOM styles
-        await page.waitForTimeout(800);
+        // Normalize DOM styles & capture lightweight 2D canvases
+        await page.waitForTimeout(200);
         await inlineDynamicCssomStyles(page);
-        await captureCanvasSnapshots(page, saveBufferAsAsset, currentUrl);
+        if (deferredBinaryUrls.size === 0) {
+          await captureCanvasSnapshots(page, saveBufferAsAsset, currentUrl);
+        }
         await normalizeRenderedDomForClone(page);
 
         const finalPageUrl = page.url() || currentUrl;
@@ -1167,19 +1250,25 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       }
     }
 
-    if (capturedPages.length === 0) {
-      throw new Error('Could not capture any page content from the target URL.');
-    }
+    await context.close().catch(() => {});
+  } finally {
+    // Close Chromium IMMEDIATELY after Step 1 so 150-200MB of RAM is freed before DOM processing, 3D downloads & VFS bundling!
+    await browser.close().catch(() => {});
+  }
 
-    // Step 2: Process HTML DOMs, ensure all referenced assets are downloaded, and rewrite links
-    emitProgress({
-      pct: 80,
-      pages: capturedPages.length,
-      assets: assetMap.size,
-      title: 'Processing DOM & downloading missing assets…',
-      log: `Inspecting ${capturedPages.length} page(s) and verifying local assets`,
-      type: 'step',
-    });
+  if (capturedPages.length === 0) {
+    throw new Error('Could not capture any page content from the target URL.');
+  }
+
+  // Step 2: Process HTML DOMs, ensure all referenced assets are downloaded, and rewrite links
+  emitProgress({
+    pct: 80,
+    pages: capturedPages.length,
+    assets: assetMap.size,
+    title: 'Processing DOM & downloading missing assets…',
+    log: `Inspecting ${capturedPages.length} page(s) and verifying local assets`,
+    type: 'step',
+  });
 
     for (const pageItem of capturedPages) {
       const $ = cheerio.load(pageItem.html);
@@ -1356,7 +1445,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     let hasVfs = false;
     if (saveAssets && rewriteLinks) {
       emitProgress({
-        pct: 90,
+        pct: 88,
         pages: capturedPages.length,
         assets: assetMap.size,
         title: 'Rewriting CSS, JS & 3D VFS modules…',
@@ -1381,10 +1470,34 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         } catch {}
       }
 
-      // Rewrite already-captured remote & root-relative image/font/media/3D URLs inside JS/MJS bundles
+      // Scan downloaded JS/MJS bundles for any 3D/WebGL/Lottie asset paths (e.g. "/models/clara-rigged.glb")
       const jsRecords = [...assetMap.values()].filter(
         (a) => a.folder === 'js' && (a.diskPath.endsWith('.js') || a.diskPath.endsWith('.mjs'))
       );
+      const modelPathRegex = /["'`]((?:https?:\/\/[^"'`\s]+|\/[a-zA-Z0-9_./-]+)\.(?:glb|gltf|splinecode|hdr|bin|wasm|lottie|rive))["'`]/gi;
+      for (const jsAsset of jsRecords) {
+        try {
+          const jsText = fs.readFileSync(jsAsset.diskPath, 'utf8');
+          for (const m of jsText.matchAll(modelPathRegex)) {
+            const rawRef = m[1];
+            if (rawRef) {
+              try {
+                const absModelUrl = new URL(rawRef, rootOrigin).toString();
+                deferredBinaryUrls.add(absModelUrl);
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      // Download all deferred 3D / binary assets directly via Node.js fetch (now that Chromium is closed & RAM is free!)
+      if (deferredBinaryUrls.size > 0) {
+        for (const binUrl of deferredBinaryUrls) {
+          await fetchAndSaveAsset(binUrl, 18000);
+        }
+      }
+
+      // Rewrite already-captured remote & root-relative image/font/media/3D URLs inside JS/MJS bundles
       const replaceableAssets = [...assetMap.entries()].filter(
         ([url, info]) =>
           info.folder === 'images' ||
@@ -1436,11 +1549,6 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       const outHtmlPath = path.join(siteDir, pageItem.filename);
       fs.writeFileSync(outHtmlPath, $.html(), 'utf8');
     }
-
-    await context.close();
-  } finally {
-    await browser.close();
-  }
 
   // Step 4: Package everything into a clean ZIP archive
   emitProgress({
