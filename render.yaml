@@ -28,3 +28,9 @@ services:
         value: "2"
       - key: RETENTION_HOURS
         value: "24"
+      - key: ASSET_FETCH_CONCURRENCY
+        value: "4"
+      - key: MAX_ASSET_MB
+        value: "40"
+      - key: INBROWSER_MAX_ASSET_MB
+        value: "3"

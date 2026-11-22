@@ -19,7 +19,10 @@ ENV NODE_ENV=production \
     CRAWL_BUDGET_MAX_MIN=25 \
     CHROMIUM_HEAP_MB=192 \
     CHROMIUM_RENDERER_LIMIT=2 \
-    RETENTION_HOURS=24
+    RETENTION_HOURS=24 \
+    ASSET_FETCH_CONCURRENCY=4 \
+    MAX_ASSET_MB=40 \
+    INBROWSER_MAX_ASSET_MB=3
 
 COPY package*.json ./
 RUN npm ci --omit=dev && npx playwright install chromium

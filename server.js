@@ -51,6 +51,8 @@ app.get('/api/health', (req, res) => {
     queued: jobQueue.length,
     maxConcurrentJobs: MAX_CONCURRENT_JOBS,
     memoryPct: memoryUsagePct(),
+    nodeHeapMB: Math.round(process.memoryUsage().heapUsed / 1048576),
+    nodeRssMB: Math.round(process.memoryUsage().rss / 1048576),
     timestamp: new Date().toISOString(),
   });
 });

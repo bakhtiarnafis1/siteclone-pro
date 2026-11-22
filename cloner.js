@@ -4,6 +4,8 @@ const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 
 // ---------------------------------------------------------------------------
 // Tunable limits (set via environment variables; defaults suit a 12GB server).
@@ -18,6 +20,29 @@ const CHROMIUM_HEAP_MB = envInt('CHROMIUM_HEAP_MB', 1024);
 const CHROMIUM_RENDERER_LIMIT = envInt('CHROMIUM_RENDERER_LIMIT', 4);
 // Crawl budget grows with page count (~20s per page) but never exceeds CRAWL_BUDGET_MAX_MIN.
 const CRAWL_BUDGET_MAX_MIN = envInt('CRAWL_BUDGET_MAX_MIN', 60);
+// How many asset downloads run in parallel (each streams straight to disk, never buffered in RAM)
+const ASSET_FETCH_CONCURRENCY = envInt('ASSET_FETCH_CONCURRENCY', 12);
+// Skip any single asset bigger than this (huge videos would otherwise fill disk/RAM on small hosts)
+const MAX_ASSET_BYTES = envInt('MAX_ASSET_MB', 100) * 1024 * 1024;
+// Assets bigger than this are not captured from inside Chromium (would be held in RAM); they are streamed later
+const INBROWSER_MAX_ASSET_BYTES = envInt('INBROWSER_MAX_ASSET_MB', 4) * 1024 * 1024;
+// Inline <style> blocks larger than this (after fonts are embedded) are moved to a shared external .css file
+const INLINE_CSS_MAX_BYTES = envInt('INLINE_CSS_MAX_KB', 512) * 1024;
+
+// Run async fn over items with at most `limit` in flight
+async function mapWithConcurrency(items, limit, fn) {
+  const list = [...items];
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, list.length)) }, async () => {
+    while (next < list.length) {
+      const item = list[next++];
+      try {
+        await fn(item);
+      } catch {}
+    }
+  });
+  await Promise.all(workers);
+}
 
 /**
  * Launch Chromium using Playwright (automatically falls back to system Edge or Chrome)
@@ -706,7 +731,7 @@ async function rewriteCssUrls(cssText, cssBaseUrl, assetMap, saveAssetFromUrl, d
       } catch {}
     }
     if (missingUrls.size > 0) {
-      await Promise.all([...missingUrls].map((u) => saveAssetFromUrl(u).catch(() => null)));
+      await mapWithConcurrency(missingUrls, ASSET_FETCH_CONCURRENCY, (u) => saveAssetFromUrl(u));
     }
   }
 
@@ -1578,14 +1603,56 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       }
       const res = await fetch(assetUrl, { headers, signal: controller.signal });
       clearTimeout(timer);
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         failedAssetUrls.add(assetUrl);
         return null;
       }
       const contentType = res.headers.get('content-type') || '';
-      const arrayBuf = await res.arrayBuffer();
-      const buffer = Buffer.from(arrayBuf);
-      return saveBufferAsAsset(assetUrl, buffer, contentType);
+      const declaredSize = parseInt(res.headers.get('content-length') || '0', 10);
+      if (declaredSize > MAX_ASSET_BYTES) {
+        controller.abort();
+        failedAssetUrls.add(assetUrl);
+        return null;
+      }
+      if (assetMap.has(assetUrl)) {
+        controller.abort();
+        return assetMap.get(assetUrl);
+      }
+
+      const classified = classifyAsset(assetUrl, contentType);
+      if (!classified) {
+        controller.abort();
+        return null;
+      }
+      const primaryFilename = classified.originalFilename || classified.filename;
+      const diskPath = path.join(siteDir, 'assets', classified.folder, primaryFilename);
+
+      // Stream the body straight to disk (constant, tiny RAM use even for 50MB videos)
+      const bodyTimer = setTimeout(() => controller.abort(), Math.max(timeoutMs * 4, 30000));
+      let written = 0;
+      const sizeGuard = new Transform({
+        transform(chunk, _enc, cb) {
+          written += chunk.length;
+          if (written > MAX_ASSET_BYTES) return cb(new Error('Asset too large'));
+          cb(null, chunk);
+        },
+      });
+      try {
+        await pipeline(Readable.fromWeb(res.body), sizeGuard, fs.createWriteStream(diskPath));
+      } catch (streamErr) {
+        clearTimeout(bodyTimer);
+        fs.rmSync(diskPath, { force: true });
+        throw streamErr;
+      }
+      clearTimeout(bodyTimer);
+      if (written === 0) {
+        fs.rmSync(diskPath, { force: true });
+        return null;
+      }
+      if (assetMap.has(assetUrl)) return assetMap.get(assetUrl);
+      const record = { ...classified, diskPath, baseUrl: assetUrl };
+      assetMap.set(assetUrl, record);
+      return record;
     } catch {
       clearTimeout(timer);
       failedAssetUrls.add(assetUrl);
@@ -1726,6 +1793,9 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
           const classified = classifyAsset(reqUrl, contentType);
           if (!classified) return;
 
+          // Big files (videos etc.) are NOT copied into RAM here; Step 2 streams them to disk instead.
+          const declaredLen = parseInt(response.headers()['content-length'] || '0', 10);
+          if (declaredLen > INBROWSER_MAX_ASSET_BYTES || /^(video|audio)\//i.test(contentType)) return;
           const buffer = await response.body();
           saveBufferAsAsset(reqUrl, buffer, contentType);
         } catch {
@@ -2111,11 +2181,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         iconLinks.forEach((el) => queueCandidateUrl($(el).attr('href')));
 
         if (missingDomUrls.size > 0) {
-          const urlList = [...missingDomUrls];
-          const batchSize = 12;
-          for (let i = 0; i < urlList.length; i += batchSize) {
-            await Promise.all(urlList.slice(i, i + batchSize).map((u) => fetchAndSaveAsset(u).catch(() => null)));
-          }
+          await mapWithConcurrency(missingDomUrls, ASSET_FETCH_CONCURRENCY, (u) => fetchAndSaveAsset(u));
         }
 
         // 1. Stylesheets & Modulepreload / Preload links (<link rel="stylesheet|modulepreload|preload" href="...">)
@@ -2249,6 +2315,22 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               fetchAndSaveAsset,
               'assets/'
             );
+            if (updated.length > INLINE_CSS_MAX_BYTES) {
+              // Huge inline CSS (usually dozens of embedded webfonts) is moved to ONE shared external file.
+              // Keeps every HTML page small (low RAM while parsing) and stops duplicating MBs of fonts per page.
+              try {
+                const externalCss = await rewriteCssUrls(cssContent, basePageUrl, assetMap, fetchAndSaveAsset, '../');
+                const hash = crypto.createHash('md5').update(externalCss).digest('hex').slice(0, 12);
+                const cssFile = `__inline-${hash}.css`;
+                const cssDiskPath = path.join(siteDir, 'assets', 'css', cssFile);
+                if (!fs.existsSync(cssDiskPath)) fs.writeFileSync(cssDiskPath, externalCss, 'utf8');
+                const attrs = Object.entries(el.attribs || {})
+                  .map(([k, v]) => ` ${k}="${String(v).replace(/"/g, '&quot;')}"`)
+                  .join('');
+                $(el).replaceWith(`<link rel="stylesheet" href="assets/css/${cssFile}" data-cloner-externalized-css${attrs}>`);
+                continue;
+              } catch {}
+            }
             $(el).html(updated);
           }
         }
