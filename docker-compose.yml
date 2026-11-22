@@ -1,0 +1,32 @@
+# SiteClone Pro — single-server deployment (Oracle Cloud Always Free, 2 OCPU / 12 GB)
+# Start/update:  docker compose up -d --build
+# Logs:          docker compose logs -f
+services:
+  siteclone:
+    build: .
+    container_name: siteclone
+    restart: unless-stopped
+    init: true # reaps leftover Chromium processes
+    ipc: host # Chromium needs a large /dev/shm
+    ports:
+      - "127.0.0.1:3000:3000" # only Caddy (HTTPS) can reach it; not exposed to the internet directly
+    environment:
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      NODE_OPTIONS: "--max-old-space-size=2048"
+      MAX_QUEUE_LENGTH: "30"
+      MAX_PAGES: "300"
+      MAX_CONCURRENT_JOBS: "2"
+      MAX_JOBS_PER_IP: "2"
+      RETENTION_HOURS: "72"
+      CHROMIUM_HEAP_MB: "1024"
+      CHROMIUM_RENDERER_LIMIT: "4"
+      CRAWL_BUDGET_MAX_MIN: "60"
+    volumes:
+      - ./storage:/app/storage # clones, ZIPs and history survive rebuilds/restarts
+    mem_limit: 10g # leave ~2 GB for the OS + Caddy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

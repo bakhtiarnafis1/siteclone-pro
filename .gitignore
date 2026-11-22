@@ -8,3 +8,6 @@ storage/history.json
 credentials.md
 deploy-sync.js
 *.log
+.backup-render-version/
+*.key
+*.pem

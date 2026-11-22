@@ -2,17 +2,15 @@
 lucide.createIcons();
 
 // ---------- Backend Base URL Resolution ----------
-const DEFAULT_BACKEND_URL = 'https://siteclone-pro-1.onrender.com';
+// Empty = same origin (frontend and backend served by the same server.js, e.g. on the Oracle VM).
+// Set window.SITECLONE_CONFIG.BACKEND_URL in config.js only if the frontend is hosted separately.
 const LOCAL_HISTORY_KEY = 'siteclone_local_history_v1';
 
-function isLocalOrSameHostBackend() {
-  const h = window.location.hostname;
-  return h === 'localhost' || h === '127.0.0.1' || h.endsWith('.onrender.com') || h.endsWith('.hf.space');
-}
-
 function getApiBase() {
-  if (isLocalOrSameHostBackend()) return '';
-  const configured = (window.SITECLONE_CONFIG?.BACKEND_URL || DEFAULT_BACKEND_URL).trim().replace(/\/+$/, '');
+  const configured = (window.SITECLONE_CONFIG?.BACKEND_URL || '').trim().replace(/\/+$/, '');
+  if (!configured) return '';
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') return '';
   return configured;
 }
 
@@ -102,11 +100,26 @@ modeTabs.forEach((tab) => {
   });
 });
 
-// ---------- Page slider (1–50) ----------
+// ---------- Page slider (1–MAX_PAGES, limit read from server) ----------
 pageLimitSlider.addEventListener('input', (e) => {
   state.maxPages = parseInt(e.target.value, 10);
   pageLimitValue.textContent = state.maxPages;
 });
+
+fetch(apiUrl('/api/config'))
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg) => {
+    const max = parseInt(cfg?.maxPages, 10);
+    if (!max || max < 1) return;
+    pageLimitSlider.max = String(max);
+    if (state.maxPages > max) {
+      state.maxPages = max;
+      pageLimitSlider.value = String(max);
+      pageLimitValue.textContent = max;
+    }
+    document.querySelectorAll('.js-max-pages').forEach((el) => (el.textContent = max));
+  })
+  .catch(() => {});
 
 // ---------- Viewport toggle ----------
 viewportBtns.forEach((btn) => {
@@ -237,9 +250,20 @@ function listenToCloneProgress(jobId, payload) {
   let smoothInterval = null;
   let lastServerPct = 5;
   let consecutiveErrors = 0;
+  let isQueued = false;
 
   function handleEvent(ev) {
     if (!ev || finished) return;
+
+    // Queue state: freeze the bar while waiting in line, show live position
+    if (typeof ev.queued === 'boolean') {
+      isQueued = ev.queued;
+      progressStatusSubtitle.textContent = isQueued
+        ? `#${ev.queuePosition || '?'} in line · starts automatically when a slot frees up`
+        : payload.url;
+    } else if (typeof ev.pct === 'number' && ev.pct > 4) {
+      isQueued = false;
+    }
 
     if (typeof ev.pct === 'number' && ev.pct > lastServerPct) {
       lastServerPct = ev.pct;
@@ -322,7 +346,7 @@ function listenToCloneProgress(jobId, payload) {
 
   // 2. Bounded micro-progress (only advances at most +4% above the real server percentage so it NEVER falsely creeps to 94%!)
   smoothInterval = setInterval(() => {
-    if (finished) return;
+    if (finished || isQueued) return;
     const maxAllowedCreep = Math.min(lastServerPct + 4, 92);
     if (state.displayedPct > 2 && state.displayedPct < maxAllowedCreep) {
       setProgress({ pct: state.displayedPct + 1 }, payload.maxPages);
@@ -363,6 +387,9 @@ function listenToCloneProgress(jobId, payload) {
         done: statusData.done,
         error: statusData.error,
         summary: statusData.summary,
+        ...(typeof statusData.queued === 'boolean'
+          ? { queued: statusData.queued, queuePosition: statusData.queuePosition }
+          : {}),
       });
     } catch {
       consecutiveErrors++;
@@ -443,6 +470,54 @@ historyListContainer.addEventListener('click', async (e) => {
 
 refreshHistoryBtn.addEventListener('click', loadHistory);
 
-// Silently wake up backend & load history on startup
-fetch(apiUrl('/api/health')).catch(() => {});
+// ---------- Live server status (wakes the backend on page load, then refreshes every 20s) ----------
+const serverStatusEl = $('server-status');
+const serverStatusDot = $('server-status-dot');
+const serverStatusText = $('server-status-text');
+let serverStatusTimer = null;
+
+async function refreshServerStatus() {
+  if (!serverStatusEl) return;
+  try {
+    const res = await fetch(apiUrl('/api/health'), { cache: 'no-store' });
+    const h = await res.json();
+    const slots = h.maxConcurrentJobs || 1;
+    const running = h.running || 0;
+    const queued = h.queued || 0;
+    let text;
+    let color;
+    if (running < slots) {
+      text = `Server ready · ${running}/${slots} clone slot(s) in use`;
+      color = 'bg-mint';
+    } else if (queued === 0) {
+      text = `Server busy · ${running}/${slots} slot(s) in use — your clone would be #1 in line`;
+      color = 'bg-amber-300';
+    } else {
+      text = `Server busy · ${queued} waiting — your clone would be #${queued + 1} in line`;
+      color = 'bg-amber-300';
+    }
+    serverStatusText.textContent = text;
+    serverStatusDot.className = `h-1.5 w-1.5 rounded-full ${color}`;
+  } catch {
+    serverStatusText.textContent = 'Waking up the server… (first visit can take up to a minute)';
+    serverStatusDot.className = 'h-1.5 w-1.5 rounded-full bg-dim animate-pulse';
+  }
+}
+
+function startServerStatus() {
+  if (serverStatusTimer) clearInterval(serverStatusTimer);
+  refreshServerStatus();
+  serverStatusTimer = setInterval(refreshServerStatus, 20000);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(serverStatusTimer);
+    serverStatusTimer = null;
+  } else {
+    startServerStatus();
+  }
+});
+
+startServerStatus();
 loadHistory();

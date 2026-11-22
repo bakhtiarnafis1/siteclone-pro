@@ -137,7 +137,7 @@
       <div class="mx-auto max-w-3xl text-center">
         <span class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-ink-900/80 px-3 py-1 text-xs text-body">
           <span class="h-1.5 w-1.5 rounded-full bg-mint"></span>
-          Free &amp; open-source · Up to 50 pages
+          Free &amp; open-source · Up to <span class="js-max-pages">100</span> pages
         </span>
         <h1 class="mt-6 text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl">
           Download any website<br class="hidden sm:block" />
@@ -187,9 +187,9 @@
           <div id="page-limit-panel" class="hidden">
             <div class="mb-2 flex items-center justify-between text-sm">
               <label for="page-limit-slider" class="text-body">How many pages?</label>
-              <span class="font-mono text-white"><span id="page-limit-value">10</span> <span class="text-dim">/ 50</span></span>
+              <span class="font-mono text-white"><span id="page-limit-value">10</span> <span class="text-dim">/ <span class="js-max-pages">100</span></span></span>
             </div>
-            <input id="page-limit-slider" type="range" min="1" max="50" value="10" class="w-full cursor-pointer" />
+            <input id="page-limit-slider" type="range" min="1" max="100" value="10" class="w-full cursor-pointer" />
           </div>
 
           <!-- Cookies (auth only) -->
@@ -229,6 +229,12 @@
               </div>
             </div>
           </details>
+
+          <!-- Live server status -->
+          <p id="server-status" class="flex items-center justify-center gap-2 text-xs text-dim" aria-live="polite">
+            <span id="server-status-dot" class="h-1.5 w-1.5 rounded-full bg-dim animate-pulse"></span>
+            <span id="server-status-text">Checking server…</span>
+          </p>
         </form>
 
         <!-- Progress (hidden until a job starts) -->
@@ -283,7 +289,7 @@
           <div class="card rounded-2xl p-6">
             <span class="font-mono text-xs text-accent-soft">01</span>
             <h3 class="mt-4 text-base font-semibold">Paste a link</h3>
-            <p class="mt-2 text-sm leading-relaxed text-body">Pick one page, a whole site (up to 50 pages), or pages you can only see after logging in.</p>
+            <p class="mt-2 text-sm leading-relaxed text-body">Pick one page, a whole site (up to <span class="js-max-pages">100</span> pages), or pages you can only see after logging in.</p>
           </div>
           <div class="card rounded-2xl p-6">
             <span class="font-mono text-xs text-accent-soft">02</span>
@@ -316,7 +322,7 @@
           </div>
           <div class="card rounded-2xl p-6">
             <i data-lucide="layers" class="h-5 w-5 text-accent-soft"></i>
-            <h3 class="mt-4 font-semibold">Up to 50 pages</h3>
+            <h3 class="mt-4 font-semibold">Up to <span class="js-max-pages">100</span> pages</h3>
             <p class="mt-2 text-sm leading-relaxed text-body">Follows internal links automatically. Shared files are saved once.</p>
           </div>
           <div class="card rounded-2xl p-6">

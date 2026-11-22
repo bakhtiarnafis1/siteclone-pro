@@ -2,10 +2,34 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { runCloneJob, createZipArchive } = require('./cloner');
+const { runCloneJob, createZipArchive, MAX_PAGES_LIMIT } = require('./cloner');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ---------------------------------------------------------------------------
+// Server tuning (environment variables; defaults suit a 2 vCPU / 12GB server)
+// ---------------------------------------------------------------------------
+const envInt = (name, fallback) => {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+};
+const MAX_CONCURRENT_JOBS = envInt('MAX_CONCURRENT_JOBS', 1); // Chromium jobs running at the same time
+const MAX_JOBS_PER_IP = envInt('MAX_JOBS_PER_IP', 2); // running + queued jobs one visitor may hold
+const MAX_QUEUE_LENGTH = envInt('MAX_QUEUE_LENGTH', 15); // waiting jobs before new requests are refused
+// Don't start an additional parallel job while container memory use is above this % of its limit
+const MEMORY_START_THRESHOLD_PCT = envInt('MEMORY_START_THRESHOLD_PCT', 55);
+// Auto-delete clones/ZIPs older than this. OFF unless RETENTION_HOURS is set (docker-compose sets it on the server),
+// so running locally never deletes your saved clones.
+const RETENTION_HOURS = envInt('RETENTION_HOURS', 0);
+const MAX_HISTORY_ITEMS = envInt('MAX_HISTORY_ITEMS', 200);
+
+// Behind Caddy/Cloudflare, read the real visitor IP from X-Forwarded-For
+if (process.env.TRUST_PROXY) app.set('trust proxy', true);
+
+// Never let one bad clone crash the whole server
+process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
+process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
 
 app.use(
   cors({
@@ -17,13 +41,27 @@ app.use(
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Health check endpoint (also used by Vercel frontend to wake up Render free tier)
+// Health check endpoint (used by Docker healthcheck and the frontend)
 app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     service: 'siteclone-pro-backend',
     status: 'online',
+    running: runningCount,
+    queued: jobQueue.length,
+    maxConcurrentJobs: MAX_CONCURRENT_JOBS,
+    memoryPct: memoryUsagePct(),
     timestamp: new Date().toISOString(),
+  });
+});
+
+// Public limits so the frontend can adapt its page slider
+app.get('/api/config', (req, res) => {
+  res.json({
+    success: true,
+    maxPages: MAX_PAGES_LIMIT,
+    maxConcurrentJobs: MAX_CONCURRENT_JOBS,
+    maxJobsPerIp: MAX_JOBS_PER_IP,
   });
 });
 
@@ -49,35 +87,126 @@ app.use('/preview', express.static(SITES_DIR));
 // Active jobs registry for real-time Server-Sent Events (SSE) & polling fallback
 const activeJobs = new Map();
 
-// Concurrency Queue (max 1 active Chromium instance at a time to prevent 512MB RAM OOM on Render Free Tier)
+// ---------------------------------------------------------------------------
+// Memory-aware FIFO job queue
+// - At most MAX_CONCURRENT_JOBS clones run at once (Chromium is the RAM-hungry part).
+// - A 2nd+ parallel job only starts while container memory is below MEMORY_START_THRESHOLD_PCT.
+// - Waiting jobs are told their live position (#1, #2, …) every time the line moves.
+// ---------------------------------------------------------------------------
 let runningCount = 0;
-const jobQueue = [];
+const jobQueue = []; // [{ taskFn, onPosition, lastPos }]
 
-function processQueue() {
-  if (runningCount >= 1 || jobQueue.length === 0) return;
-  const nextTask = jobQueue.shift();
-  if (!nextTask) return;
-  runningCount++;
-  nextTask().finally(() => {
-    runningCount--;
-    processQueue();
+// Container memory usage in % of its limit (cgroup v2 / v1), or null if unknown (e.g. Windows dev machine)
+function readNumberFile(p) {
+  try {
+    const raw = fs.readFileSync(p, 'utf8').trim();
+    if (!raw || raw === 'max') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+function memoryUsagePct() {
+  let used = readNumberFile('/sys/fs/cgroup/memory.current');
+  let limit = readNumberFile('/sys/fs/cgroup/memory.max');
+  if (used === null || limit === null) {
+    used = readNumberFile('/sys/fs/cgroup/memory/memory.usage_in_bytes');
+    limit = readNumberFile('/sys/fs/cgroup/memory/memory.limit_in_bytes');
+  }
+  if (used === null || limit === null || limit <= 0 || limit > 1e15) return null;
+  return Math.round((used / limit) * 100);
+}
+
+function canStartAnotherJob() {
+  if (runningCount >= MAX_CONCURRENT_JOBS) return false;
+  if (runningCount === 0) return true; // always let at least one job run
+  const mem = memoryUsagePct();
+  return mem === null || mem < MEMORY_START_THRESHOLD_PCT;
+}
+
+function notifyQueuePositions() {
+  jobQueue.forEach((entry, idx) => {
+    const pos = idx + 1;
+    if (entry.lastPos !== pos) {
+      entry.lastPos = pos;
+      try {
+        entry.onPosition?.(pos);
+      } catch {}
+    }
   });
 }
 
-function enqueueCloneTask(taskFn, onQueuedPosition) {
-  if (runningCount >= 1) {
-    onQueuedPosition(jobQueue.length + 1);
+function processQueue() {
+  let started = false;
+  while (jobQueue.length > 0 && canStartAnotherJob()) {
+    const entry = jobQueue.shift();
+    runningCount++;
+    started = true;
+    Promise.resolve()
+      .then(entry.taskFn)
+      .catch((err) => console.error('[clone task]', err))
+      .finally(() => {
+        runningCount--;
+        processQueue();
+      });
   }
-  jobQueue.push(taskFn);
-  processQueue();
+  if (started) notifyQueuePositions();
 }
+// Re-check periodically in case a job was held back only because memory was high
+setInterval(processQueue, 5000).unref();
+
+function enqueueCloneTask(taskFn, onPosition) {
+  jobQueue.push({ taskFn, onPosition, lastPos: 0 });
+  processQueue();
+  notifyQueuePositions();
+}
+
+// Per-visitor fairness: count unfinished jobs per IP
+const jobsPerIp = new Map();
+function getClientIp(req) {
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+// Housekeeping: forget finished jobs from RAM after 1h, delete old clones/ZIPs from disk
+const FINISHED_JOB_TTL_MS = 60 * 60 * 1000;
+function cleanupOldData() {
+  const now = Date.now();
+  for (const [id, job] of activeJobs) {
+    if (job.done && now - (job.finishedAt || job.createdAt) > FINISHED_JOB_TTL_MS) activeJobs.delete(id);
+  }
+
+  if (!RETENTION_HOURS) return;
+  const cutoff = now - RETENTION_HOURS * 60 * 60 * 1000;
+  const isBusy = (id) => {
+    const job = activeJobs.get(id);
+    return job && !job.done;
+  };
+  try {
+    for (const name of fs.readdirSync(SITES_DIR)) {
+      const p = path.join(SITES_DIR, name);
+      if (!isBusy(name) && fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { recursive: true, force: true });
+    }
+    for (const name of fs.readdirSync(ZIPS_DIR)) {
+      const p = path.join(ZIPS_DIR, name);
+      if (!isBusy(name.replace(/\.zip$/, '')) && fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true });
+    }
+    const history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8') || '[]');
+    const kept = history.filter((h) => fs.existsSync(path.join(SITES_DIR, h.id)) || fs.existsSync(path.join(ZIPS_DIR, `${h.id}.zip`)));
+    if (kept.length !== history.length) fs.writeFileSync(HISTORY_FILE, JSON.stringify(kept, null, 2));
+  } catch (err) {
+    console.error('[cleanup]', err.message);
+  }
+}
+setInterval(cleanupOldData, 30 * 60 * 1000).unref();
+setTimeout(cleanupOldData, 10 * 1000).unref();
 
 function saveToHistory(summary) {
   try {
     const history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8') || '[]');
     const filtered = history.filter((item) => item.id !== summary.id);
     filtered.unshift(summary);
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify(filtered.slice(0, 100), null, 2));
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(filtered.slice(0, MAX_HISTORY_ITEMS), null, 2));
   } catch (err) {
     console.error('Failed to save history:', err);
   }
@@ -158,8 +287,32 @@ app.post('/api/clone', (req, res) => {
     return res.status(400).json({ success: false, error: 'Invalid URL format.' });
   }
 
+  if (jobQueue.length >= MAX_QUEUE_LENGTH) {
+    return res.status(503).json({
+      success: false,
+      error: `The server is busy right now (${jobQueue.length} clones waiting). Please try again in a few minutes.`,
+    });
+  }
+
+  const clientIp = getClientIp(req);
+  const ipJobs = jobsPerIp.get(clientIp) || 0;
+  if (ipJobs >= MAX_JOBS_PER_IP) {
+    return res.status(429).json({
+      success: false,
+      error: `You already have ${ipJobs} clone(s) running or queued. Please wait for one to finish.`,
+    });
+  }
+
   const jobId = `${domainSlug}-${Date.now().toString(36)}`;
-  const effectiveMaxPages = mode === 'single' ? 1 : Math.min(Math.max(parseInt(maxPages, 10) || 1, 1), 50);
+  const effectiveMaxPages =
+    mode === 'single' ? 1 : Math.min(Math.max(parseInt(maxPages, 10) || 1, 1), MAX_PAGES_LIMIT);
+
+  jobsPerIp.set(clientIp, ipJobs + 1);
+  const releaseIpSlot = () => {
+    const n = (jobsPerIp.get(clientIp) || 1) - 1;
+    if (n <= 0) jobsPerIp.delete(clientIp);
+    else jobsPerIp.set(clientIp, n);
+  };
 
   const jobState = {
     id: jobId,
@@ -194,15 +347,28 @@ app.post('/api/clone', (req, res) => {
   };
 
   enqueueCloneTask(
-    () =>
-      runCloneJob(
+    () => {
+      if (jobState.queuePosition) {
+        jobState.queuePosition = 0;
+        emitProgress({
+          pct: 5,
+          queued: false,
+          queuePosition: 0,
+          title: "It's your turn — starting clone…",
+          log: 'A slot is free now. Your clone has started.',
+          type: 'success',
+        });
+      }
+      return runCloneJob(
         jobId,
-        req.body,
+        { ...req.body, maxPages: effectiveMaxPages },
         { sitesDir: SITES_DIR, zipsDir: ZIPS_DIR },
         emitProgress
       )
         .then((summary) => {
+          releaseIpSlot();
           jobState.done = true;
+          jobState.finishedAt = Date.now();
           jobState.pct = 100;
           jobState.summary = summary;
           saveToHistory(summary);
@@ -214,7 +380,9 @@ app.post('/api/clone', (req, res) => {
           jobState.clients.clear();
         })
         .catch((err) => {
+          releaseIpSlot();
           jobState.done = true;
+          jobState.finishedAt = Date.now();
           jobState.pct = 100;
           jobState.error = err.message || 'Cloning failed';
           emitProgress({
@@ -233,14 +401,18 @@ app.post('/api/clone', (req, res) => {
             } catch {}
           }
           jobState.clients.clear();
-        }),
+        });
+    },
     (queuePos) => {
+      jobState.queuePosition = queuePos;
       emitProgress({
         pct: 4,
         pages: 0,
         assets: 0,
-        title: `Queued (#${queuePos} in line) — starting shortly…`,
-        log: `Another clone is currently finishing. Your job is #${queuePos} in queue and will start automatically.`,
+        queued: true,
+        queuePosition: queuePos,
+        title: `Waiting in line — you are #${queuePos}`,
+        log: `Server is busy with ${runningCount} clone(s). You are #${queuePos} in line; your clone starts automatically.`,
         type: 'info',
       });
     }
@@ -291,6 +463,8 @@ app.get('/api/clone/status/:jobId', (req, res) => {
     summary: jobState.summary,
     eventsCount: jobState.events.length,
     newEvents: jobState.events.slice(fromIdx),
+    queued: Boolean(jobState.queuePosition),
+    queuePosition: jobState.queuePosition || 0,
   });
 });
 
@@ -362,6 +536,14 @@ app.delete('/api/history/:id', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 SiteClone Pro MVP Server running at http://localhost:${PORT}\n`);
+const server = app.listen(PORT, () => {
+  console.log(
+    `\n🚀 SiteClone Pro server running at http://localhost:${PORT} ` +
+      `(maxPages=${MAX_PAGES_LIMIT}, concurrentJobs=${MAX_CONCURRENT_JOBS}, perIp=${MAX_JOBS_PER_IP}, ` +
+      `retention=${RETENTION_HOURS ? `${RETENTION_HOURS}h` : 'off'})\n`
+  );
 });
+// Large clones can take a long time; don't let Node cut long-lived requests (SSE, ZIP rebuilds)
+server.requestTimeout = 0;
+server.headersTimeout = 65 * 1000;
+server.keepAliveTimeout = 61 * 1000;

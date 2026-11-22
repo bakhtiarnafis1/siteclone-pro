@@ -1,0 +1,14 @@
+# Caddy automatically gets a free Let's Encrypt HTTPS certificate for this hostname.
+# {$SITE_HOST} is set by oracle-setup.sh, e.g. 140-238-12-34.sslip.io or clone.yourdomain.com
+{$SITE_HOST} {
+	encode gzip zstd
+
+	reverse_proxy 127.0.0.1:3000 {
+		# Stream live progress (Server-Sent Events) without buffering
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}

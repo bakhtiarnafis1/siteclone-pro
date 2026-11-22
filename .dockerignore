@@ -3,9 +3,17 @@ storage/sites/*
 storage/zips/*
 storage/history.json
 .vercel
+public/.vercel
 .git
 .env
 .deploy-env.json
 credentials.md
 deploy-sync.js
+.backup-render-version
+deploy
+docker-compose.yml
+ORACLE-SETUP.md
 *.log
+*.key
+*.pem
+HOSTING-SETUP-GUIDE.md

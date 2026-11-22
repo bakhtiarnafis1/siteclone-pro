@@ -5,6 +5,20 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// ---------------------------------------------------------------------------
+// Tunable limits (set via environment variables; defaults suit a 12GB server).
+// On a tiny 512MB host use e.g. MAX_PAGES=50 CHROMIUM_HEAP_MB=192.
+// ---------------------------------------------------------------------------
+const envInt = (name, fallback) => {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+};
+const MAX_PAGES_LIMIT = envInt('MAX_PAGES', 300);
+const CHROMIUM_HEAP_MB = envInt('CHROMIUM_HEAP_MB', 1024);
+const CHROMIUM_RENDERER_LIMIT = envInt('CHROMIUM_RENDERER_LIMIT', 4);
+// Crawl budget grows with page count (~20s per page) but never exceeds CRAWL_BUDGET_MAX_MIN.
+const CRAWL_BUDGET_MAX_MIN = envInt('CRAWL_BUDGET_MAX_MIN', 60);
+
 /**
  * Launch Chromium using Playwright (automatically falls back to system Edge or Chrome)
  */
@@ -15,7 +29,7 @@ async function launchBrowser() {
     { channel: 'chrome', headless: true },
   ];
 
-  // Keep SwiftShader / software WebGL active for lightweight canvases while capping Chromium memory for 512MB containers
+  // Keep SwiftShader / software WebGL active for lightweight canvases; memory caps come from env (see top of file)
   const launchArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -23,8 +37,8 @@ async function launchBrowser() {
     '--enable-webgl',
     '--ignore-gpu-blocklist',
     '--enable-unsafe-swiftshader',
-    '--js-flags=--max-old-space-size=192',
-    '--renderer-process-limit=2',
+    `--js-flags=--max-old-space-size=${CHROMIUM_HEAP_MB}`,
+    `--renderer-process-limit=${CHROMIUM_RENDERER_LIMIT}`,
     '--disable-background-networking',
     '--disable-default-apps',
     '--disable-extensions',
@@ -1477,8 +1491,9 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     cookies = '',
   } = options;
 
-  // Enforce maximum 50 pages limit
-  const maxPages = mode === 'single' ? 1 : Math.min(Math.max(parseInt(requestedMaxPages, 10) || 1, 1), 50);
+  // Enforce maximum pages limit (MAX_PAGES env, default 300)
+  const maxPages =
+    mode === 'single' ? 1 : Math.min(Math.max(parseInt(requestedMaxPages, 10) || 1, 1), MAX_PAGES_LIMIT);
 
   let startUrl;
   try {
@@ -1725,7 +1740,10 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     // Hard time budget for crawling: if the site is huge/slow, finish with the pages captured so far
     // (partial success + ZIP) instead of running 15 minutes and failing.
     const crawlStartedAt = Date.now();
-    const CRAWL_BUDGET_MS = maxPages > 1 ? 7 * 60 * 1000 : 3 * 60 * 1000;
+    const CRAWL_BUDGET_MS =
+      maxPages > 1
+        ? Math.min(Math.max(7 * 60 * 1000, maxPages * 20 * 1000), CRAWL_BUDGET_MAX_MIN * 60 * 1000)
+        : 3 * 60 * 1000;
     let budgetExceeded = false;
 
     // Crawl loop (1 page for Single mode, up to 50 pages for Full / Auth mode)
@@ -2461,4 +2479,4 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
   return summary;
 }
 
-module.exports = { runCloneJob, createZipArchive };
+module.exports = { runCloneJob, createZipArchive, MAX_PAGES_LIMIT };

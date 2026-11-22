@@ -8,3 +8,8 @@ Dockerfile
 server.js
 cloner.js
 *.log
+.backup-render-version
+deploy
+docker-compose.yml
+ORACLE-SETUP.md
+HOSTING-SETUP-GUIDE.md
