@@ -109,15 +109,28 @@ function readNumberFile(p) {
     return null;
   }
 }
+// Reclaimable file cache (recently written ZIPs etc.) is subtracted, like `docker stats` does,
+// so the number reflects memory that can actually cause an out-of-memory kill.
+function readInactiveFileBytes(statPath) {
+  try {
+    const m = fs.readFileSync(statPath, 'utf8').match(/^(?:total_)?inactive_file (\d+)$/m);
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
 function memoryUsagePct() {
   let used = readNumberFile('/sys/fs/cgroup/memory.current');
   let limit = readNumberFile('/sys/fs/cgroup/memory.max');
+  let statPath = '/sys/fs/cgroup/memory.stat';
   if (used === null || limit === null) {
     used = readNumberFile('/sys/fs/cgroup/memory/memory.usage_in_bytes');
     limit = readNumberFile('/sys/fs/cgroup/memory/memory.limit_in_bytes');
+    statPath = '/sys/fs/cgroup/memory/memory.stat';
   }
   if (used === null || limit === null || limit <= 0 || limit > 1e15) return null;
-  return Math.round((used / limit) * 100);
+  const real = Math.max(0, used - readInactiveFileBytes(statPath));
+  return Math.round((real / limit) * 100);
 }
 
 function canStartAnotherJob() {
