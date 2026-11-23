@@ -1,0 +1,10 @@
+// Cloudflare Workers — serves the static frontend in public/ (the API stays on Render).
+{
+  "name": "siteclone",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}
