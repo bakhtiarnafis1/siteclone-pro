@@ -6,6 +6,14 @@ services:
     healthCheckPath: /api/health
     # Render Free = 512 MB RAM / 0.1 CPU. These match the Dockerfile defaults.
     envVars:
+      # Supabase (database, sign-in, ZIP storage). Values: Supabase dashboard → Project Settings → API.
+      # Set them in the Render dashboard (never commit the service-role key).
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: NODE_ENV
         value: production
       - key: TRUST_PROXY

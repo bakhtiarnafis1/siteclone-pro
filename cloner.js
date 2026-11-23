@@ -349,6 +349,61 @@ async function loadRobotsRules(origin) {
   }
 }
 
+/**
+ * Count the pages a website lists in its sitemap(s) — used to show "N pages found" before/while crawling.
+ * Follows sitemap indexes (up to 8 child sitemaps) and stops at 20,000 URLs. Never throws.
+ */
+async function countSitemapPages(origin, cookieHeader = '') {
+  const seenPages = new Set();
+  const fetchText = async (u) => {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 7000);
+      const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; SiteCloneBot/1.0)' };
+      if (cookieHeader) headers.Cookie = cookieHeader;
+      const res = await fetch(u, { signal: ctrl.signal, redirect: 'follow', headers });
+      clearTimeout(timer);
+      if (!res.ok) return '';
+      const type = res.headers.get('content-type') || '';
+      if (/text\/html/i.test(type)) return '';
+      return (await res.text()).slice(0, 8 * 1024 * 1024);
+    } catch {
+      return '';
+    }
+  };
+  const candidates = new Set([`${origin}/sitemap.xml`, `${origin}/sitemap_index.xml`]);
+  try {
+    const robots = await fetchText(`${origin}/robots.txt`);
+    for (const m of robots.matchAll(/^\s*sitemap:\s*(\S+)/gim)) candidates.add(m[1]);
+  } catch {}
+  const queue = [...candidates];
+  const visited = new Set();
+  let fetched = 0;
+  while (queue.length && fetched < 10 && seenPages.size < 20000) {
+    const u = queue.shift();
+    if (visited.has(u)) continue;
+    visited.add(u);
+    const xml = await fetchText(u);
+    fetched++;
+    if (!xml) continue;
+    const isIndex = /<sitemapindex/i.test(xml);
+    for (const m of xml.matchAll(/<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]\s]+)/gi)) {
+      const loc = m[1].replace(/&amp;/g, '&');
+      if (isIndex) {
+        if (queue.length < 8) queue.push(loc);
+      } else {
+        try {
+          const lu = new URL(loc);
+          if (lu.host.replace(/^www\./, '') === new URL(origin).host.replace(/^www\./, '')) {
+            seenPages.add(lu.pathname.replace(/\/+$/, '') + lu.search);
+          }
+        } catch {}
+      }
+    }
+  }
+  return seenPages.size;
+}
+
 function isAllowedByRobots(rules, targetUrl) {
   if (!rules || rules.length === 0) return true;
   let pathAndQuery;
@@ -1602,7 +1657,7 @@ function formatBytes(bytes) {
 /**
  * Main Website Cloner Runner
  */
-async function runCloneJob(jobId, options, paths, emitProgress) {
+async function runCloneJob(jobId, options, paths, rawEmitProgress) {
   const {
     url: rawInputUrl,
     mode = 'single',
@@ -1656,6 +1711,20 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
   pageFileMap.set(normalizedStart, 'index.html');
   pageQueue.push(normalizedStart);
 
+  // Page discovery: every unique internal page the engine has seen (links + sitemap), even beyond the limit
+  const foundPages = new Set([normalizedStart]);
+  let sitemapCount = 0;
+  const foundCount = () => Math.max(foundPages.size, sitemapCount);
+  let lastFoundSent = 0;
+  const emitProgress = (ev) => {
+    const found = foundCount();
+    lastFoundSent = found;
+    rawEmitProgress({ found, ...ev });
+  };
+  const noteFound = (norm) => {
+    foundPages.add(norm);
+  };
+
   // Backend HTML UI (signed-in) mode: cookies and/or localStorage of the user's own session
   const parsedSessionCookies = parseUserCookies(cookies, startUrl);
   const authMode = mode === 'auth' || parsedSessionCookies.length > 0 || Boolean(String(localStorageData || '').trim());
@@ -1686,6 +1755,18 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     );
   }
 
+  // Count the pages listed in the sitemap in the background (does not slow the crawl down)
+  countSitemapPages(rootOrigin, cookieHeaderFor(startUrl))
+    .then((n) => {
+      if (n > sitemapCount) {
+        sitemapCount = n;
+        if (foundCount() !== lastFoundSent) {
+          emitProgress({ log: `Sitemap lists ${n} page${n === 1 ? '' : 's'} on this website`, type: 'info' });
+        }
+      }
+    })
+    .catch(() => {});
+
   // Extra pages (up to 50) that the crawl can't reach through links, e.g. screens opened by buttons
   if (mode !== 'single' && String(extraUrls || '').trim()) {
     const extras = String(extraUrls)
@@ -1701,6 +1782,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       } catch {
         continue;
       }
+      noteFound(norm);
       if (!pageQueue.includes(norm)) pageQueue.push(norm);
     }
   }
@@ -2129,7 +2211,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
 
         // If multi-page mode is active and we need more pages, discover internal links
         const discoverInternalLinks = (htmlStr, baseUrl) => {
-          if (maxPages <= 1 || pageFileMap.size >= maxPages * 2) return;
+          // (runs even in Single Page mode so the engine can report how many pages the site has)
           const $ = cheerio.load(htmlStr);
           $('a[href]').each((_, el) => {
             const rawHref = ($(el).attr('href') || '').trim();
@@ -2161,6 +2243,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
                 return;
               }
 
+              noteFound(norm);
               if (!visitedPages.has(norm) && !pageQueue.includes(norm)) {
                 if (visitedPages.size + pageQueue.length < maxPages) {
                   const assignedFile = pageUrlToFilename(
@@ -2273,8 +2356,8 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
           type: 'step',
         });
 
-        // Discover additional internal links if we still need more pages to reach maxPages
-        if (visitedPages.size + pageQueue.length < maxPages) {
+        // Discover internal links (always — so the "pages found" count keeps growing past the limit)
+        {
           const $ = cheerio.load(htmlStr);
           $('a[href]').each((_, el) => {
             const rawHref = ($(el).attr('href') || '').trim();
@@ -2301,6 +2384,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
               ) {
                 return;
               }
+              noteFound(norm);
               if (!visitedPages.has(norm) && !pageQueue.includes(norm)) {
                 if (visitedPages.size + pageQueue.length < maxPages) {
                   const assignedFile = pageUrlToFilename(

@@ -15,6 +15,8 @@ if (loggedIn) {
   $('nav-cta').textContent = 'Dashboard';
   $('nav-cta').href = '/app';
   $('auth-note-text').textContent = `Signed in${user?.name ? ` as ${user.name}` : ''} — your download opens in the dashboard.`;
+  $('nav-cta').insertAdjacentHTML('afterbegin', '<i data-lucide="layout-dashboard" class="h-4 w-4"></i>');
+  lucide.createIcons();
 } else {
   document.querySelectorAll('.js-dash-link').forEach((a) => (a.href = '/login?next=%2Fapp'));
 }
@@ -61,16 +63,16 @@ async function refreshServerStatus() {
     const queued = h.queued || 0;
     if (running < slots) {
       text.textContent = `Server ready · ${running}/${slots} download slot(s) in use`;
-      dot.className = 'h-1.5 w-1.5 rounded-full bg-mint';
+      dot.className = 'h-1.5 w-1.5 rounded-full bg-emerald-500';
     } else {
       text.textContent = queued
         ? `Server busy · ${queued} waiting — new downloads wait in line`
         : `Server busy · ${running}/${slots} slot(s) in use — new downloads wait in line`;
-      dot.className = 'h-1.5 w-1.5 rounded-full bg-amber-300';
+      dot.className = 'h-1.5 w-1.5 rounded-full bg-amber-400';
     }
   } catch {
     text.textContent = 'Waking up the server… (first visit can take up to a minute)';
-    dot.className = 'h-1.5 w-1.5 rounded-full bg-dim animate-pulse';
+    dot.className = 'h-1.5 w-1.5 rounded-full bg-slate-300 animate-pulse';
   }
 }
 

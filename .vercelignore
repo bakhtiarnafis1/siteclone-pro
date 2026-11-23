@@ -14,3 +14,7 @@ docker-compose.yml
 ORACLE-SETUP.md
 HOSTING-SETUP-GUIDE.md
 Reference
+store.js
+auth.js
+supabase.js
+supabase

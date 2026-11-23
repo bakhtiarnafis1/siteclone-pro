@@ -1,47 +1,17 @@
 /**
- * Accounts & sign-in.
- * - Passwords: scrypt with a random salt per user (never stored in plain text).
- * - Sessions: stateless signed tokens (HMAC-SHA256), sent as "Authorization: Bearer <token>".
- *   Changing the password bumps `tokenVersion`, which signs out every other device.
- * - Short-lived "file" tokens let <a href> downloads / previews work without exposing the session token.
+ * Accounts & sign-in — Supabase Auth.
+ * - Browsers sign in with Supabase (email + password) and send the access token as
+ *   "Authorization: Bearer <token>". The backend checks it with Supabase (cached ~60 s) and
+ *   loads the user's `profiles` row (role, allowance, disabled flag).
+ * - Short-lived "file" tokens (HMAC) let <a href> downloads / previews work without exposing the session.
+ * - The demo admin (admin@siteclone.app) lives in Supabase Auth; its password is never in this repo.
  */
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+const sb = require('./supabase');
 
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const FILE_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-// ---------------------------------------------------------------------------
-// Demo admin account (created on every boot if missing).
-// Only the scrypt HASH of the password is in the code, so the public repository does not reveal it.
-// Override with ADMIN_EMAIL / ADMIN_PASSWORD environment variables.
-// ---------------------------------------------------------------------------
+const TOKEN_CACHE_MS = 60 * 1000;
 const SEED_ADMIN_EMAIL = 'admin@siteclone.app';
-const SEED_ADMIN_NAME = 'Admin';
-const SEED_ADMIN_PASSWORD_HASH = 'scrypt$592a3662057832ded8a31b1cb570901d$f3cbc18f5d7654ade998f667e38e5ad73362f0696e75106257a28a9f04fe3185007c02a68a41a7190b718c4ec3eedb4158ade163d767ce5b2a33be1271a2ab68';
-
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(String(password), salt, 64, { N: 16384, r: 8, p: 1 });
-  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
-}
-
-function verifyPassword(password, stored) {
-  try {
-    const [algo, saltHex, hashHex] = String(stored || '').split('$');
-    if (algo !== 'scrypt' || !saltHex || !hashHex) return false;
-    const expected = Buffer.from(hashHex, 'hex');
-    const actual = crypto.scryptSync(String(password), Buffer.from(saltHex, 'hex'), expected.length, {
-      N: 16384,
-      r: 8,
-      p: 1,
-    });
-    return crypto.timingSafeEqual(expected, actual);
-  } catch {
-    return false;
-  }
-}
 
 function b64url(input) {
   return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -50,29 +20,17 @@ function fromB64url(input) {
   return Buffer.from(String(input).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
 }
 
-function createAuth({ store, storageDir }) {
-  // Signing secret: AUTH_SECRET env, else a random one persisted next to the database
-  let secret = process.env.AUTH_SECRET;
-  if (!secret) {
-    const secretFile = path.join(storageDir, 'db', 'auth-secret.key');
-    try {
-      secret = fs.readFileSync(secretFile, 'utf8').trim();
-    } catch {}
-    if (!secret) {
-      secret = crypto.randomBytes(48).toString('hex');
-      try {
-        fs.mkdirSync(path.dirname(secretFile), { recursive: true });
-        fs.writeFileSync(secretFile, secret, { mode: 0o600 });
-      } catch {}
-    }
-  }
+function createAuth({ store }) {
+  // Stable signing secret for file links: AUTH_SECRET, else derived from the service key
+  const secret =
+    process.env.AUTH_SECRET ||
+    crypto.createHash('sha256').update(`siteclone-file-links:${process.env.SUPABASE_SERVICE_ROLE_KEY || crypto.randomBytes(32).toString('hex')}`).digest('hex');
 
   function sign(payload) {
     const body = b64url(JSON.stringify(payload));
     const sig = b64url(crypto.createHmac('sha256', secret).update(body).digest());
     return `${body}.${sig}`;
   }
-
   function verify(token) {
     if (!token || typeof token !== 'string' || !token.includes('.')) return null;
     const [body, sig] = token.split('.');
@@ -89,23 +47,9 @@ function createAuth({ store, storageDir }) {
     }
   }
 
-  function sessionTokenFor(user) {
-    return sign({ t: 'session', uid: user.id, v: user.tokenVersion || 0, exp: Date.now() + SESSION_TTL_MS });
-  }
-
-  // Scoped token for one file (ZIP download / preview) of one user
   function fileTokenFor(user, scope, resourceId) {
     return sign({ t: 'file', uid: user.id, s: scope, r: resourceId, exp: Date.now() + FILE_TOKEN_TTL_MS });
   }
-
-  function userFromSessionToken(token) {
-    const p = verify(token);
-    if (!p || p.t !== 'session') return null;
-    const user = store.users.find((u) => u.id === p.uid);
-    if (!user || user.disabled || (user.tokenVersion || 0) !== p.v) return null;
-    return user;
-  }
-
   function userFromFileToken(token, scope, resourceId) {
     const p = verify(token);
     if (!p || p.t !== 'file' || p.s !== scope || p.r !== resourceId) return null;
@@ -114,20 +58,54 @@ function createAuth({ store, storageDir }) {
     return user;
   }
 
+  // ---- Supabase access tokens (cached so every poll doesn't hit Supabase)
+  const tokenCache = new Map(); // sha256(token) -> { uid, email, until }
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of tokenCache) if (v.until < now) tokenCache.delete(k);
+  }, 5 * 60 * 1000).unref();
+
+  async function userFromAccessToken(token) {
+    if (!token) return null;
+    const key = crypto.createHash('sha256').update(token).digest('hex');
+    let hit = tokenCache.get(key);
+    if (!hit || hit.until < Date.now()) {
+      const authUser = await sb.auth.getUser(token);
+      if (!authUser || !authUser.id) {
+        tokenCache.delete(key);
+        return null;
+      }
+      hit = { uid: authUser.id, email: authUser.email, until: Date.now() + TOKEN_CACHE_MS };
+      tokenCache.set(key, hit);
+    }
+    let user = store.users.find((u) => u.id === hit.uid);
+    if (!user) user = await store.users.fetch(hit.uid); // e.g. just signed up
+    if (!user || user.disabled) return null;
+    return user;
+  }
+  const forgetUserTokens = (uid) => {
+    for (const [k, v] of tokenCache) if (v.uid === uid) tokenCache.delete(k);
+  };
+
   function bearerFrom(req) {
     const h = req.headers.authorization || '';
-    if (h.startsWith('Bearer ')) return h.slice(7).trim();
-    return null;
+    return h.startsWith('Bearer ') ? h.slice(7).trim() : null;
   }
 
   // Express middleware
   function requireAuth(req, res, next) {
-    const user = userFromSessionToken(bearerFrom(req) || req.query.token);
-    if (!user) return res.status(401).json({ success: false, error: 'Please log in to continue.', code: 'AUTH_REQUIRED' });
-    req.user = user;
-    next();
+    userFromAccessToken(bearerFrom(req))
+      .then((user) => {
+        if (!user) return res.status(401).json({ success: false, error: 'Please log in to continue.', code: 'AUTH_REQUIRED' });
+        req.user = user;
+        req.accessToken = bearerFrom(req);
+        next();
+      })
+      .catch((err) => {
+        console.error('[auth]', err.message);
+        res.status(503).json({ success: false, error: 'Sign-in service is not reachable right now. Please try again in a moment.' });
+      });
   }
-
   function requireAdmin(req, res, next) {
     requireAuth(req, res, () => {
       if (req.user.role !== 'admin') return res.status(403).json({ success: false, error: 'Admins only.' });
@@ -135,52 +113,25 @@ function createAuth({ store, storageDir }) {
     });
   }
 
-  function createUser({ email, name, password, role = 'user', passwordHash }) {
-    const now = new Date().toISOString();
-    return store.users.insert({
-      id: crypto.randomUUID(),
-      email: String(email).trim().toLowerCase(),
-      name: String(name || '').trim().slice(0, 80) || String(email).split('@')[0],
-      passwordHash: passwordHash || hashPassword(password),
-      role,
-      monthlyLimit: role === 'admin' ? null : defaultMonthlyLimit(),
-      usage: { periodStart: now, used: 0 },
-      disabled: false,
-      tokenVersion: 0,
-      createdAt: now,
-      lastLoginAt: null,
-    });
-  }
-
-  function ensureSeedAdmin() {
+  /** Make sure the seeded admin account has the admin role (and create it if ADMIN_PASSWORD is set) */
+  async function ensureSeedAdmin() {
     const email = (process.env.ADMIN_EMAIL || SEED_ADMIN_EMAIL).trim().toLowerCase();
-    const existing = store.users.find((u) => u.email === email);
-    const envPassword = process.env.ADMIN_PASSWORD;
-    if (!existing) {
-      createUser({
-        email,
-        name: SEED_ADMIN_NAME,
-        role: 'admin',
-        ...(envPassword ? { password: envPassword } : { passwordHash: SEED_ADMIN_PASSWORD_HASH }),
-      });
-      console.log(`[auth] Admin account ready: ${email}`);
-    } else if (existing.role !== 'admin') {
-      store.users.update(existing.id, { role: 'admin', monthlyLimit: null });
+    let admin = store.users.find((u) => u.email === email);
+    if (!admin && process.env.ADMIN_PASSWORD) {
+      try {
+        const created = await sb.auth.admin.createUser({ email, password: process.env.ADMIN_PASSWORD, name: 'Admin' });
+        admin = await store.users.fetch(created.id);
+      } catch (err) {
+        console.error('[auth] could not create the admin account:', err.message);
+      }
     }
+    if (admin && (admin.role !== 'admin' || admin.monthlyLimit !== null)) {
+      store.users.update(admin.id, { role: 'admin', monthlyLimit: null, planName: 'Admin' });
+    }
+    if (admin) console.log(`[auth] Admin account ready: ${email}`);
   }
 
-  return {
-    hashPassword,
-    verifyPassword,
-    sessionTokenFor,
-    fileTokenFor,
-    userFromSessionToken,
-    userFromFileToken,
-    requireAuth,
-    requireAdmin,
-    createUser,
-    ensureSeedAdmin,
-  };
+  return { fileTokenFor, userFromFileToken, userFromAccessToken, forgetUserTokens, requireAuth, requireAdmin, ensureSeedAdmin };
 }
 
 function defaultMonthlyLimit() {
@@ -188,4 +139,4 @@ function defaultMonthlyLimit() {
   return Number.isFinite(v) && v >= 0 ? v : 10;
 }
 
-module.exports = { createAuth, hashPassword, verifyPassword, defaultMonthlyLimit };
+module.exports = { createAuth, defaultMonthlyLimit };

@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { runCloneJob, MAX_PAGES_LIMIT } = require('./cloner');
+const sb = require('./supabase'); // loads .env locally
 const { createStore } = require('./store');
 const { createAuth } = require('./auth');
 
@@ -25,7 +26,13 @@ const MEMORY_START_THRESHOLD_PCT = envInt('MEMORY_START_THRESHOLD_PCT', 55);
 // Auto-delete download ZIPs older than this. OFF unless RETENTION_HOURS is set (Dockerfile sets it for Render).
 const RETENTION_HOURS = envInt('RETENTION_HOURS', 0);
 const PERIOD_DAYS = 30; // download allowance resets every 30 days
-const REGISTRATION_OPEN = process.env.ALLOW_REGISTRATION !== 'false';
+// Sign-ups: ALLOW_REGISTRATION=false closes them for good; otherwise the admin panel decides
+const registrationOpen = () => process.env.ALLOW_REGISTRATION !== 'false' && store.settings.registration_open !== false;
+const defaultMonthlyLimit = () => {
+  const v = store.settings.default_monthly_limit;
+  return v === null ? null : Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : 10;
+};
+const ALL_MODES = ['single_page', 'full_website', 'cookie_export'];
 const PAGE_OPTIONS = [10, 25, 50, 100, 200, 300].filter((n) => n <= MAX_PAGES_LIMIT);
 if (!PAGE_OPTIONS.includes(MAX_PAGES_LIMIT)) PAGE_OPTIONS.push(MAX_PAGES_LIMIT);
 
@@ -45,23 +52,44 @@ const ZIPS_DIR = path.join(STORAGE_DIR, 'zips');
 const LIBRARY_DIR = path.join(STORAGE_DIR, 'library');
 [STORAGE_DIR, SITES_DIR, ZIPS_DIR, LIBRARY_DIR].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
 
-const store = createStore(STORAGE_DIR);
-const auth = createAuth({ store, storageDir: STORAGE_DIR });
-auth.ensureSeedAdmin();
+// Users, downloads & library live in Supabase (see supabase/schema.sql); ZIPs are copied to Supabase Storage
+const ZIP_BUCKET = 'zips';
+const STORAGE_MAX_BYTES = 50 * 1024 * 1024; // Supabase Free: 50 MB per file
+const store = createStore();
+const auth = createAuth({ store });
+let dbReady = false;
 
-// Downloads that were in progress when the server stopped can't be resumed
-for (const d of store.downloads.all()) {
-  if (['queued', 'running', 'processing'].includes(d.status)) {
-    Object.assign(d, {
-      status: 'failed',
-      error_code: 'SERVER_RESTART',
-      error_message: 'The server restarted while this download was running. Please start it again — it was not counted.',
-      finished_at: new Date().toISOString(),
-    });
-    refundDownload(d);
+async function bootDatabase() {
+  if (!sb.configured) {
+    console.error('[db] SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set — accounts and downloads are unavailable.');
+    return;
   }
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await store.init();
+      break;
+    } catch (err) {
+      console.error(`[db] could not load data from Supabase (attempt ${attempt}):`, err.message);
+      await new Promise((r) => setTimeout(r, Math.min(30000, attempt * 3000)));
+    }
+  }
+  await auth.ensureSeedAdmin();
+  // Downloads that were in progress when the server stopped can't be resumed
+  for (const d of store.downloads.all()) {
+    if (['queued', 'running', 'processing'].includes(d.status)) {
+      Object.assign(d, {
+        status: 'failed',
+        error_code: 'SERVER_RESTART',
+        error_message: 'The server restarted while this download was running. Please start it again — it was not counted.',
+        finished_at: new Date().toISOString(),
+        queue_position: null,
+      });
+      refundDownload(d);
+    }
+  }
+  store.downloads.save();
+  dbReady = true;
 }
-store.downloads.save();
 
 app.use(
   cors({
@@ -72,6 +100,10 @@ app.use(
   })
 );
 app.use(express.json({ limit: '5mb' }));
+app.use('/api', (req, res, next) => {
+  if (dbReady || req.path === '/health' || req.path === '/config') return next();
+  res.status(503).json({ success: false, error: 'The server is starting up — please try again in a few seconds.', code: 'STARTING' });
+});
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 const ipOf = (req) => req.ip || req.socket?.remoteAddress || 'unknown';
@@ -119,6 +151,19 @@ function allowanceFor(user) {
   };
 }
 
+/** What this user may download (admins are never limited) */
+function limitsFor(user) {
+  const admin = user.role === 'admin';
+  const maxPages = admin ? MAX_PAGES_LIMIT : Math.min(MAX_PAGES_LIMIT, user.maxPagesLimit || MAX_PAGES_LIMIT);
+  const modes = admin || !Array.isArray(user.allowedModes) || !user.allowedModes.length ? ALL_MODES : user.allowedModes.filter((m) => ALL_MODES.includes(m));
+  return {
+    maxPages,
+    pageOptions: PAGE_OPTIONS.filter((n) => n <= maxPages).concat(PAGE_OPTIONS.some((n) => n === maxPages) || admin ? [] : [maxPages]).sort((a, b) => a - b),
+    modes,
+    maxActiveJobs: admin ? null : user.maxActiveJobs || MAX_JOBS_PER_USER,
+  };
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -128,6 +173,8 @@ function publicUser(user) {
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
     disabled: Boolean(user.disabled),
+    planName: user.role === 'admin' ? 'Admin' : user.planName || 'Free',
+    limits: limitsFor(user),
   };
 }
 
@@ -145,8 +192,8 @@ const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(e || '')
 // ---------------------------------------------------------------------------
 // Auth API
 // ---------------------------------------------------------------------------
-app.post('/api/auth/register', (req, res) => {
-  if (!REGISTRATION_OPEN) return res.status(403).json({ success: false, error: 'Sign-ups are closed right now.' });
+app.post('/api/auth/register', async (req, res) => {
+  if (!registrationOpen()) return res.status(403).json({ success: false, error: 'Sign-ups are closed right now.' });
   if (!rateLimit(`reg:${ipOf(req)}`, 10, 60 * 60 * 1000)) {
     return res.status(429).json({ success: false, error: 'Too many sign-ups from this network. Try again later.' });
   }
@@ -159,26 +206,24 @@ app.post('/api/auth/register', (req, res) => {
   if (store.users.find((u) => u.email === normalized)) {
     return res.status(409).json({ success: false, error: 'An account with this email already exists. Log in instead.' });
   }
-  const user = auth.createUser({ email: normalized, name, password });
-  store.users.update(user.id, { lastLoginAt: new Date().toISOString() });
-  res.json({ success: true, token: auth.sessionTokenFor(user), user: publicUser(user), allowance: allowanceFor(user) });
+  try {
+    // Created already confirmed (no email step); a database trigger adds the profile row
+    const created = await sb.auth.admin.createUser({ email: normalized, password: String(password), name: String(name).trim().slice(0, 80) });
+    const user = (await store.users.fetch(created.id)) || null;
+    if (user && user.monthlyLimit !== defaultMonthlyLimit()) store.users.update(user.id, { monthlyLimit: defaultMonthlyLimit() });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.status === 422 || /already/i.test(err.message)) {
+      return res.status(409).json({ success: false, error: 'An account with this email already exists. Log in instead.' });
+    }
+    console.error('[register]', err.message);
+    res.status(400).json({ success: false, error: err.message || 'Could not create the account.' });
+  }
 });
 
-app.post('/api/auth/login', (req, res) => {
-  if (!rateLimit(`login:${ipOf(req)}`, 20, 15 * 60 * 1000)) {
-    return res.status(429).json({ success: false, error: 'Too many attempts. Please wait 15 minutes and try again.' });
-  }
-  const { email = '', password = '' } = req.body || {};
-  const user = store.users.find((u) => u.email === String(email).trim().toLowerCase());
-  if (!user || !auth.verifyPassword(password, user.passwordHash)) {
-    return res.status(401).json({ success: false, error: 'Wrong email or password.' });
-  }
-  if (user.disabled) return res.status(403).json({ success: false, error: 'This account has been disabled. Contact support.' });
-  store.users.update(user.id, { lastLoginAt: new Date().toISOString() });
-  res.json({ success: true, token: auth.sessionTokenFor(user), user: publicUser(user), allowance: allowanceFor(user) });
-});
-
+// Called by the browser right after it signs in with Supabase (records the login time)
 app.get('/api/auth/me', auth.requireAuth, (req, res) => {
+  if (req.query.login === '1') store.users.update(req.user.id, { lastLoginAt: new Date().toISOString() });
   res.json({ success: true, user: publicUser(req.user), allowance: allowanceFor(req.user) });
 });
 
@@ -189,17 +234,25 @@ app.patch('/api/me', auth.requireAuth, (req, res) => {
   res.json({ success: true, user: publicUser(user) });
 });
 
-app.post('/api/me/password', auth.requireAuth, (req, res) => {
+// Change password: checks the current one, signs out every other device, returns a fresh session
+app.post('/api/me/password', auth.requireAuth, async (req, res) => {
   const { currentPassword = '', newPassword = '' } = req.body || {};
-  if (!auth.verifyPassword(currentPassword, req.user.passwordHash)) {
-    return res.status(400).json({ success: false, error: 'Your current password is not correct.' });
-  }
   if (String(newPassword).length < 8) return res.status(400).json({ success: false, error: 'Use at least 8 characters.' });
-  const user = store.users.update(req.user.id, {
-    passwordHash: auth.hashPassword(newPassword),
-    tokenVersion: (req.user.tokenVersion || 0) + 1, // signs out other devices
-  });
-  res.json({ success: true, token: auth.sessionTokenFor(user) });
+  if (!rateLimit(`pw:${req.user.id}`, 10, 15 * 60 * 1000)) {
+    return res.status(429).json({ success: false, error: 'Too many attempts. Please wait 15 minutes.' });
+  }
+  try {
+    const check = await sb.auth.passwordGrant(req.user.email, String(currentPassword));
+    if (!check) return res.status(400).json({ success: false, error: 'Your current password is not correct.' });
+    await sb.auth.admin.updateUser(req.user.id, { password: String(newPassword) });
+    await sb.auth.revokeSessions(req.user.id);
+    auth.forgetUserTokens(req.user.id);
+    const session = await sb.auth.passwordGrant(req.user.email, String(newPassword));
+    res.json({ success: true, session: session ? { access_token: session.access_token, refresh_token: session.refresh_token } : null });
+  } catch (err) {
+    console.error('[password]', err.message);
+    res.status(400).json({ success: false, error: err.message || 'Could not change the password.' });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -320,6 +373,7 @@ function publicDownload(d) {
     max_pages: d.max_pages,
     status: d.status,
     pages: d.pages ?? null,
+    pages_found: d.pages_found ?? null,
     assets: d.assets ?? null,
     zip_size_bytes: d.zip_size_bytes ?? null,
     error_code: d.error_code || null,
@@ -332,7 +386,8 @@ function publicDownload(d) {
     queue_position: d.status === 'queued' ? d.queue_position || null : null,
     progress: d.progress || null,
     options: d.options || {},
-    zip_available: d.status === 'completed' && fs.existsSync(zipPathOf(d.id)),
+    zip_available: d.status === 'completed' && (Boolean(d.zip_storage_path) || fs.existsSync(zipPathOf(d.id))),
+    preview_available: d.status === 'completed' && fs.existsSync(path.join(siteDirOf(d.id), 'index.html')),
     library_id: d.library_id || null,
     logs: job ? job.logs.slice(-6) : [],
   };
@@ -358,6 +413,27 @@ function cleanupFiles(id, { keepZip = false } = {}) {
   }
 }
 
+// Keep a copy of each finished ZIP in Supabase Storage, so it can still be downloaded after the
+// server restarts (Render Free wipes its disk when it sleeps or redeploys)
+async function backupZipToStorage(rec) {
+  const zipPath = zipPathOf(rec.id);
+  try {
+    const size = fs.statSync(zipPath).size;
+    if (!sb.configured || size > STORAGE_MAX_BYTES) return;
+    const key = `${rec.user_id}/${rec.id}.zip`;
+    await sb.storage.uploadFile(ZIP_BUCKET, key, zipPath);
+    const still = store.downloads.find((x) => x.id === rec.id);
+    if (still) store.downloads.update(rec.id, { zip_storage_path: key });
+    else sb.storage.remove(ZIP_BUCKET, key).catch(() => {});
+  } catch (err) {
+    console.error('[storage] ZIP backup failed:', err.message);
+  }
+}
+function removeStoredZip(d) {
+  if (d && d.zip_storage_path) sb.storage.remove(ZIP_BUCKET, d.zip_storage_path).catch(() => {});
+}
+const zipNameOf = (d) => `${d.domain}-${(d.finished_at || d.created_at || '').slice(0, 10)}.zip`;
+
 app.get('/api/website-downloads', auth.requireAuth, (req, res) => {
   const downloads = store.downloads.filter((d) => d.user_id === req.user.id).map(publicDownload);
   res.json({ success: true, downloads, allowance: allowanceFor(req.user) });
@@ -374,6 +450,9 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
   const body = req.body || {};
   const mode = String(body.mode || 'single_page');
   if (!MODES[mode]) return res.status(400).json({ success: false, error: 'Choose what kind of website it is.', code: 'INVALID_INPUT' });
+  if (!limitsFor(user).modes.includes(mode)) {
+    return res.status(403).json({ success: false, error: 'This download type is not enabled on your account. Contact the admin.', code: 'MODE_NOT_ALLOWED' });
+  }
 
   // URL
   let targetUrl;
@@ -394,9 +473,10 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
   let maxPages = 1;
   if (mode !== 'single_page') {
     maxPages = parseInt(body.maxPages, 10) || 10;
-    const allowedMax = MAX_PAGES_LIMIT;
-    if (user.role !== 'admin' && !PAGE_OPTIONS.includes(maxPages)) {
-      return res.status(400).json({ success: false, error: `Choose one of: ${PAGE_OPTIONS.join(', ')} pages.`, code: 'INVALID_INPUT' });
+    const lim = limitsFor(user);
+    const allowedMax = lim.maxPages;
+    if (user.role !== 'admin' && !lim.pageOptions.includes(maxPages)) {
+      return res.status(400).json({ success: false, error: `Choose one of: ${lim.pageOptions.join(', ')} pages.`, code: 'INVALID_INPUT' });
     }
     if (maxPages < 1 || maxPages > allowedMax) {
       return res.status(400).json({ success: false, error: `Enter a number of pages from 1 to ${allowedMax}.`, code: 'INVALID_INPUT' });
@@ -436,7 +516,8 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
     return res.status(402).json({ success: false, error: 'No downloads left on your plan this period.', code: 'NO_ALLOWANCE', allowance });
   }
   const mine = store.downloads.filter((d) => d.user_id === user.id && isActive(d)).length;
-  if (mine >= MAX_JOBS_PER_USER && user.role !== 'admin') {
+  const maxActive = limitsFor(user).maxActiveJobs;
+  if (maxActive && mine >= maxActive) {
     return res.status(429).json({ success: false, error: `You already have ${mine} download(s) running. Please wait for one to finish.` });
   }
   if (jobQueue.length >= MAX_QUEUE_LENGTH) {
@@ -489,6 +570,7 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
     const patch = {};
     if (typeof ev.pages === 'number') patch.pages = ev.pages;
     if (typeof ev.assets === 'number') patch.assets = ev.assets;
+    if (typeof ev.found === 'number' && ev.found > 0) patch.pages_found = ev.found;
     if (typeof ev.pct === 'number' || ev.title) {
       patch.progress = { pct: typeof ev.pct === 'number' ? ev.pct : download.progress?.pct || 0, title: ev.title || download.progress?.title || '' };
     }
@@ -540,6 +622,7 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
           progress: { pct: 100, title: 'Ready' },
         });
         store.downloads.save();
+        backupZipToStorage(rec);
       } else {
         cleanupFiles(id); // deleted while finishing
       }
@@ -578,15 +661,26 @@ app.post('/api/website-downloads/:id/stop', auth.requireAuth, (req, res) => {
   if (!d) return;
   if (!isActive(d)) return res.status(400).json({ success: false, error: 'This download is not running.' });
   const job = activeJobs.get(d.id);
+  // Still waiting in line: nothing is saved yet, so stopping simply takes it out of the line (not counted)
   if (d.status === 'queued' || !job) {
-    return res.status(400).json({ success: false, error: 'This download has not started yet — cancel it instead.' });
+    if (job) job.control.cancelled = true;
+    removeFromQueue(d.id);
+    activeJobs.delete(d.id);
+    refundDownload(d);
+    store.downloads.update(d.id, {
+      status: 'failed',
+      error_code: 'STOPPED',
+      error_message: 'Stopped before it started — it was not counted.',
+      finished_at: new Date().toISOString(),
+      queue_position: null,
+      stop_requested_at: new Date().toISOString(),
+    });
+    return res.json({ success: true, download: publicDownload(d) });
   }
-  if (d.status === 'processing') {
-    return res.status(400).json({ success: false, error: 'All pages are already saved — the ZIP is being created now.' });
-  }
+  // Already packaging: the ZIP is seconds away, nothing to stop
+  if (d.status === 'processing') return res.json({ success: true, download: publicDownload(d), note: 'finishing' });
   job.control.stopRequested = true;
-  d.stop_requested_at = new Date().toISOString();
-  store.downloads.save();
+  store.downloads.update(d.id, { stop_requested_at: d.stop_requested_at || new Date().toISOString() });
   res.json({ success: true, download: publicDownload(d) });
 });
 
@@ -606,18 +700,26 @@ app.delete('/api/website-downloads/:id', auth.requireAuth, (req, res) => {
   } else {
     cleanupFiles(d.id);
   }
+  removeStoredZip(d);
   store.downloads.remove(d.id);
   res.json({ success: true });
 });
 
 // Short-lived link for the ZIP or the live preview (so <a href> works without exposing the session token)
-app.post('/api/website-downloads/:id/link', auth.requireAuth, (req, res) => {
+app.post('/api/website-downloads/:id/link', auth.requireAuth, async (req, res) => {
   const d = ownDownload(req, res);
   if (!d) return;
   if (d.status !== 'completed') return res.status(400).json({ success: false, error: 'This download is not ready yet.' });
   const kind = req.body?.kind === 'preview' ? 'preview' : 'zip';
   if (kind === 'zip' && !fs.existsSync(zipPathOf(d.id))) {
-    return res.status(410).json({ success: false, error: 'This ZIP has expired on the server. Please download the website again.' });
+    if (!d.zip_storage_path) {
+      return res.status(410).json({ success: false, error: 'This ZIP has expired on the server. Please download the website again.' });
+    }
+    try {
+      return res.json({ success: true, url: await sb.storage.signedUrl(ZIP_BUCKET, d.zip_storage_path, 3600, zipNameOf(d)) });
+    } catch (err) {
+      return res.status(410).json({ success: false, error: 'This ZIP is no longer available. Please download the website again.' });
+    }
   }
   if (kind === 'preview' && !fs.existsSync(path.join(siteDirOf(d.id), 'index.html'))) {
     return res.status(410).json({ success: false, error: 'The preview has expired on the server. Download the ZIP instead.' });
@@ -633,9 +735,16 @@ app.get('/api/website-downloads/:id/download', (req, res) => {
   const d = store.downloads.find((x) => x.id === req.params.id);
   if (!d || (d.user_id !== user.id && user.role !== 'admin')) return res.status(404).send('Download not found.');
   const zipPath = zipPathOf(d.id);
-  if (!fs.existsSync(zipPath)) return res.status(410).send('This ZIP has expired on the server. Please download the website again.');
-  const date = (d.finished_at || d.created_at || '').slice(0, 10);
-  res.download(zipPath, `${d.domain}-${date}.zip`);
+  if (!fs.existsSync(zipPath)) {
+    if (d.zip_storage_path) {
+      return sb.storage
+        .signedUrl(ZIP_BUCKET, d.zip_storage_path, 600, zipNameOf(d))
+        .then((u) => res.redirect(u))
+        .catch(() => res.status(410).send('This ZIP is no longer available. Please download the website again.'));
+    }
+    return res.status(410).send('This ZIP has expired on the server. Please download the website again.');
+  }
+  res.download(zipPath, zipNameOf(d));
 });
 
 // Previews: a signed, path-scoped cookie lets the cloned page load its own CSS/JS/images
@@ -666,7 +775,8 @@ app.use('/preview/:id', (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// Website Library — sites already downloaded by an admin, free for every signed-in user
+// Website Library — sites already downloaded by an admin, free for every signed-in user.
+// ZIPs are kept in Supabase Storage (zips/library/<id>.zip) so they survive restarts.
 // ---------------------------------------------------------------------------
 const libraryZipOf = (id) => path.join(LIBRARY_DIR, `${id}.zip`);
 
@@ -679,7 +789,7 @@ function publicLibraryItem(item) {
     pages: item.pages,
     zip_size_bytes: item.zip_size_bytes,
     created_at: item.created_at,
-    available: fs.existsSync(libraryZipOf(item.id)),
+    available: Boolean(item.storage_path) || fs.existsSync(libraryZipOf(item.id)),
   };
 }
 
@@ -692,13 +802,25 @@ app.get('/api/library', auth.requireAuth, (req, res) => {
   res.json({ success: true, items });
 });
 
-app.post('/api/library', auth.requireAdmin, (req, res) => {
+app.post('/api/library', auth.requireAdmin, async (req, res) => {
   const d = store.downloads.find((x) => x.id === req.body?.downloadId);
-  if (!d || d.status !== 'completed' || !fs.existsSync(zipPathOf(d.id))) {
-    return res.status(400).json({ success: false, error: 'Pick a finished download whose ZIP is still on the server.' });
+  const hasLocal = Boolean(d) && fs.existsSync(zipPathOf(d.id));
+  if (!d || d.status !== 'completed' || (!hasLocal && !d.zip_storage_path)) {
+    return res.status(400).json({ success: false, error: 'Pick a finished download whose ZIP is still available.' });
   }
   const id = crypto.randomUUID();
-  fs.copyFileSync(zipPathOf(d.id), libraryZipOf(id));
+  const key = `library/${id}.zip`;
+  let storagePath = null;
+  try {
+    if (d.zip_storage_path) await sb.storage.copy(ZIP_BUCKET, d.zip_storage_path, key);
+    else if (fs.statSync(zipPathOf(d.id)).size <= STORAGE_MAX_BYTES) await sb.storage.uploadFile(ZIP_BUCKET, key, zipPathOf(d.id));
+    else throw new Error('too large');
+    storagePath = key;
+  } catch (err) {
+    // Too big for Storage (50 MB) or Storage unavailable: keep a local copy (lost when the server restarts)
+    if (!hasLocal) return res.status(500).json({ success: false, error: 'Could not copy the ZIP to the library. Please try again.' });
+    fs.copyFileSync(zipPathOf(d.id), libraryZipOf(id));
+  }
   const item = store.library.insert({
     id,
     title: String(req.body?.title || d.domain).trim().slice(0, 120) || d.domain,
@@ -707,10 +829,12 @@ app.post('/api/library', auth.requireAdmin, (req, res) => {
     pages: d.pages,
     zip_size_bytes: d.zip_size_bytes,
     source_download_id: d.id,
+    storage_path: storagePath,
+    created_by: req.user.id,
     created_at: new Date().toISOString(),
   });
-  d.library_id = id;
-  store.downloads.save();
+  store.downloads.update(d.id, { library_id: id });
+  store.logAdminEvent(req.user.id, null, 'library.add', { library_id: id, url: d.url });
   res.json({ success: true, item: publicLibraryItem(item) });
 });
 
@@ -720,15 +844,22 @@ app.delete('/api/library/:id', auth.requireAdmin, (req, res) => {
   try {
     fs.rmSync(libraryZipOf(item.id), { force: true });
   } catch {}
+  if (item.storage_path) sb.storage.remove(ZIP_BUCKET, item.storage_path).catch(() => {});
   for (const d of store.downloads.filter((x) => x.library_id === item.id)) d.library_id = null;
   store.downloads.save();
   store.library.remove(item.id);
+  store.logAdminEvent(req.user.id, null, 'library.remove', { library_id: item.id, url: item.url });
   res.json({ success: true });
 });
 
-app.post('/api/library/:id/link', auth.requireAuth, (req, res) => {
+app.post('/api/library/:id/link', auth.requireAuth, async (req, res) => {
   const item = store.library.find((i) => i.id === req.params.id);
   if (!item) return res.status(404).json({ success: false, error: 'Not found.' });
+  if (item.storage_path) {
+    try {
+      return res.json({ success: true, url: await sb.storage.signedUrl(ZIP_BUCKET, item.storage_path, 3600, `${item.domain}.zip`) });
+    } catch {}
+  }
   if (!fs.existsSync(libraryZipOf(item.id))) return res.status(410).json({ success: false, error: 'This ZIP is no longer on the server.' });
   res.json({ success: true, url: `/api/library/${item.id}/download?t=${auth.fileTokenFor(req.user, 'library', item.id)}` });
 });
@@ -746,6 +877,7 @@ app.get('/api/library/:id/download', (req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/api/admin/overview', auth.requireAdmin, (req, res) => {
   const all = store.downloads.all();
+  const dayAgo = Date.now() - 86400000;
   res.json({
     success: true,
     stats: {
@@ -755,22 +887,98 @@ app.get('/api/admin/overview', auth.requireAdmin, (req, res) => {
       failed: all.filter((d) => d.status === 'failed').length,
       active: all.filter(isActive).length,
       library: store.library.all().length,
+      last24h: all.filter((d) => new Date(d.created_at).getTime() > dayAgo).length,
+      pagesSaved: all.reduce((n, d) => n + (d.status === 'completed' ? d.pages || 0 : 0), 0),
     },
-    server: { running: runningCount, queued: jobQueue.length, maxConcurrentJobs: MAX_CONCURRENT_JOBS, memoryPct: memoryUsagePct() },
+    server: { running: runningCount, queued: jobQueue.length, maxConcurrentJobs: MAX_CONCURRENT_JOBS, memoryPct: memoryUsagePct(), database: 'Supabase' },
   });
 });
 
-app.get('/api/admin/users', auth.requireAdmin, (req, res) => {
-  const users = store.users.all().map((u) => ({
+function adminUserView(u) {
+  return {
     ...publicUser(u),
     allowance: allowanceFor(u),
     monthlyLimit: u.monthlyLimit ?? null,
+    planName: u.planName || 'Free',
+    maxPagesLimit: u.maxPagesLimit ?? null,
+    allowedModes: u.allowedModes || null,
+    maxActiveJobs: u.maxActiveJobs ?? null,
+    notes: u.notes || '',
     downloads: store.downloads.filter((d) => d.user_id === u.id).length,
-  }));
-  res.json({ success: true, users });
+    activeDownloads: store.downloads.filter((d) => d.user_id === u.id && isActive(d)).length,
+    pagesSaved: store.downloads.all().reduce((n, d) => n + (d.user_id === u.id && d.status === 'completed' ? d.pages || 0 : 0), 0),
+  };
+}
+
+const randomPassword = () => `${crypto.randomBytes(6).toString('base64url')}-${crypto.randomBytes(4).toString('hex')}`;
+
+// Create an account from the admin panel (ready to sign in, no email step)
+app.post('/api/admin/users', auth.requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const email = String(b.email || '').trim().toLowerCase();
+  const name = String(b.name || '').trim().slice(0, 80) || email.split('@')[0];
+  if (!isValidEmail(email)) return res.status(400).json({ success: false, error: 'Enter a valid email address.' });
+  const password = String(b.password || '') || randomPassword();
+  if (password.length < 8) return res.status(400).json({ success: false, error: 'The password needs at least 8 characters (or leave it empty to generate one).' });
+  if (store.users.find((u) => u.email === email)) return res.status(409).json({ success: false, error: 'An account with this email already exists.' });
+  try {
+    const created = await sb.auth.admin.createUser({ email, password, name });
+    const user = await store.users.fetch(created.id);
+    const role = b.role === 'admin' ? 'admin' : 'user';
+    const limit = b.monthlyLimit === null || b.monthlyLimit === '' || b.monthlyLimit === undefined ? defaultMonthlyLimit() : Math.max(0, parseInt(b.monthlyLimit, 10) || 0);
+    store.users.update(user.id, { role, monthlyLimit: role === 'admin' ? null : limit, planName: String(b.planName || 'Free').slice(0, 40) });
+    store.logAdminEvent(req.user.id, user.id, 'user.create', { email, role });
+    res.json({ success: true, user: adminUserView(user), password, generated: !b.password });
+  } catch (err) {
+    if (err.status === 422 || /already/i.test(err.message)) return res.status(409).json({ success: false, error: 'An account with this email already exists.' });
+    res.status(400).json({ success: false, error: err.message || 'Could not create the account.' });
+  }
 });
 
-app.patch('/api/admin/users/:id', auth.requireAdmin, (req, res) => {
+// Site-wide settings
+app.get('/api/admin/settings', auth.requireAdmin, (req, res) => {
+  res.json({
+    success: true,
+    settings: {
+      defaultMonthlyLimit: defaultMonthlyLimit(),
+      registrationOpen: registrationOpen(),
+      registrationLockedByServer: process.env.ALLOW_REGISTRATION === 'false',
+      maxPages: MAX_PAGES_LIMIT,
+      maxJobsPerUser: MAX_JOBS_PER_USER,
+      maxConcurrentJobs: MAX_CONCURRENT_JOBS,
+      periodDays: PERIOD_DAYS,
+    },
+  });
+});
+app.patch('/api/admin/settings', auth.requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  try {
+    if ('defaultMonthlyLimit' in b) {
+      const v = b.defaultMonthlyLimit === null || b.defaultMonthlyLimit === '' ? null : Math.max(0, parseInt(b.defaultMonthlyLimit, 10) || 0);
+      await store.saveSetting('default_monthly_limit', v);
+    }
+    if ('registrationOpen' in b) await store.saveSetting('registration_open', Boolean(b.registrationOpen));
+    if (b.applyDefaultToAll) {
+      // give every normal user the default limit (admins stay unlimited)
+      for (const u of store.users.all()) if (u.role !== 'admin') store.users.update(u.id, { monthlyLimit: defaultMonthlyLimit() });
+    }
+    store.logAdminEvent(req.user.id, null, 'settings.update', b);
+    res.json({ success: true, settings: { defaultMonthlyLimit: defaultMonthlyLimit(), registrationOpen: registrationOpen() } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/users', auth.requireAdmin, async (req, res) => {
+  try {
+    await store.users.reload(); // include people who signed up moments ago
+  } catch (err) {
+    console.error('[admin] reload users:', err.message);
+  }
+  res.json({ success: true, users: store.users.all().map(adminUserView) });
+});
+
+app.patch('/api/admin/users/:id', auth.requireAdmin, async (req, res) => {
   const user = store.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
   const patch = {};
@@ -788,21 +996,77 @@ app.patch('/api/admin/users/:id', auth.requireAdmin, (req, res) => {
   if ('disabled' in body) {
     if (user.id === req.user.id && body.disabled) return res.status(400).json({ success: false, error: 'You cannot disable yourself.' });
     patch.disabled = Boolean(body.disabled);
-    if (patch.disabled) patch.tokenVersion = (user.tokenVersion || 0) + 1; // sign out now
+    try {
+      // a banned Supabase user cannot sign in; existing sessions are removed
+      await sb.auth.admin.updateUser(user.id, { ban_duration: patch.disabled ? '876000h' : 'none' });
+      if (patch.disabled) await sb.auth.revokeSessions(user.id);
+    } catch (err) {
+      return res.status(500).json({ success: false, error: `Could not update sign-in access: ${err.message}` });
+    }
+    auth.forgetUserTokens(user.id);
   }
   if (body.resetUsage) patch.usage = { periodStart: new Date().toISOString(), used: 0 };
   if (typeof body.planName === 'string') patch.planName = body.planName.trim().slice(0, 40) || 'Free';
+  if (typeof body.name === 'string' && body.name.trim()) patch.name = body.name.trim().slice(0, 80);
+  if (typeof body.notes === 'string') patch.notes = body.notes.slice(0, 500);
+  if ('maxPagesLimit' in body) {
+    const v = body.maxPagesLimit;
+    patch.maxPagesLimit = v === null || v === '' ? null : Math.min(MAX_PAGES_LIMIT, Math.max(1, parseInt(v, 10) || 1));
+  }
+  if ('maxActiveJobs' in body) {
+    const v = body.maxActiveJobs;
+    patch.maxActiveJobs = v === null || v === '' ? null : Math.min(10, Math.max(1, parseInt(v, 10) || 1));
+  }
+  if ('allowedModes' in body) {
+    const list = Array.isArray(body.allowedModes) ? body.allowedModes.filter((m) => ALL_MODES.includes(m)) : [];
+    if (body.allowedModes !== null && !list.length) return res.status(400).json({ success: false, error: 'Allow at least one download type.' });
+    patch.allowedModes = body.allowedModes === null || list.length === ALL_MODES.length ? null : list;
+  }
   const updated = store.users.update(user.id, patch);
-  res.json({ success: true, user: { ...publicUser(updated), allowance: allowanceFor(updated), monthlyLimit: updated.monthlyLimit ?? null } });
+  store.logAdminEvent(req.user.id, user.id, 'user.update', patch);
+  res.json({ success: true, user: adminUserView(updated) });
 });
 
-// Set a temporary password for a user (email sending is not available on the free host)
-app.post('/api/admin/users/:id/reset-password', auth.requireAdmin, (req, res) => {
+// Set a temporary password for a user (Supabase's free email service only reaches project members)
+app.post('/api/admin/users/:id/reset-password', auth.requireAdmin, async (req, res) => {
   const user = store.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
-  const temp = `${crypto.randomBytes(6).toString('base64url')}-${crypto.randomBytes(4).toString('hex')}`;
-  store.users.update(user.id, { passwordHash: auth.hashPassword(temp), tokenVersion: (user.tokenVersion || 0) + 1 });
+  const temp = randomPassword();
+  try {
+    await sb.auth.admin.updateUser(user.id, { password: temp });
+    await sb.auth.revokeSessions(user.id);
+    auth.forgetUserTokens(user.id);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: `Could not set the password: ${err.message}` });
+  }
+  store.logAdminEvent(req.user.id, user.id, 'user.reset_password');
   res.json({ success: true, temporaryPassword: temp });
+});
+
+// Delete an account and everything it owns
+app.delete('/api/admin/users/:id', auth.requireAdmin, async (req, res) => {
+  const user = store.users.find((u) => u.id === req.params.id);
+  if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
+  if (user.id === req.user.id) return res.status(400).json({ success: false, error: 'You cannot delete your own account.' });
+  for (const d of store.downloads.filter((x) => x.user_id === user.id)) {
+    const job = activeJobs.get(d.id);
+    if (job) job.control.cancelled = true;
+    removeFromQueue(d.id);
+    cleanupFiles(d.id);
+    removeStoredZip(d);
+    store.downloads.remove(d.id);
+  }
+  try {
+    await store.flushAll();
+    await sb.auth.admin.deleteUser(user.id); // cascades to the profile row in the database
+  } catch (err) {
+    return res.status(500).json({ success: false, error: `Could not delete the account: ${err.message}` });
+  }
+  auth.forgetUserTokens(user.id);
+  const idx = store.users.all().indexOf(user);
+  if (idx !== -1) store.users.all().splice(idx, 1);
+  store.logAdminEvent(req.user.id, null, 'user.delete', { email: user.email });
+  res.json({ success: true });
 });
 
 app.get('/api/admin/downloads', auth.requireAdmin, (req, res) => {
@@ -821,6 +1085,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     service: 'siteclone-pro-backend',
+    database: dbReady ? 'ready' : sb.configured ? 'starting' : 'not configured',
     status: 'online',
     running: runningCount,
     queued: jobQueue.length,
@@ -839,7 +1104,7 @@ app.get('/api/config', (req, res) => {
     pageOptions: PAGE_OPTIONS,
     maxConcurrentJobs: MAX_CONCURRENT_JOBS,
     maxJobsPerUser: MAX_JOBS_PER_USER,
-    registrationOpen: REGISTRATION_OPEN,
+    registrationOpen: registrationOpen(),
     periodDays: PERIOD_DAYS,
   });
 });
@@ -864,6 +1129,17 @@ function cleanupOldFiles() {
       } catch {}
     }
   }
+  // Copies in Supabase Storage expire too (library copies are kept)
+  if (!dbReady) return;
+  const expired = store.downloads.filter(
+    (d) => d.zip_storage_path && d.finished_at && new Date(d.finished_at).getTime() < cutoff
+  );
+  if (expired.length) {
+    sb.storage
+      .remove(ZIP_BUCKET, expired.map((d) => d.zip_storage_path))
+      .then(() => expired.forEach((d) => store.downloads.update(d.id, { zip_storage_path: null })))
+      .catch((err) => console.error("[storage] cleanup:", err.message));
+  }
 }
 setInterval(cleanupOldFiles, 30 * 60 * 1000).unref();
 setTimeout(cleanupOldFiles, 15 * 1000).unref();
@@ -875,8 +1151,9 @@ const server = app.listen(PORT, () => {
   console.log(
     `\n🚀 SiteClone Pro server running at http://localhost:${PORT} ` +
       `(maxPages=${MAX_PAGES_LIMIT}, concurrentJobs=${MAX_CONCURRENT_JOBS}, perUser=${MAX_JOBS_PER_USER}, ` +
-      `retention=${RETENTION_HOURS ? `${RETENTION_HOURS}h` : 'off'}, registration=${REGISTRATION_OPEN ? 'open' : 'closed'})\n`
+      `retention=${RETENTION_HOURS ? `${RETENTION_HOURS}h` : 'off'}, registration=${process.env.ALLOW_REGISTRATION === 'false' ? 'closed' : 'admin-controlled'})\n`
   );
+  bootDatabase().catch((err) => console.error("[db] boot failed:", err));
 });
 // Large clones can take a long time; don't let Node cut long-lived requests (ZIP downloads)
 server.requestTimeout = 0;
