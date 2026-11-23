@@ -161,10 +161,11 @@ code.inline { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12p
 
 /* Spinning progress ring next to the Stop button */
 .pring { position: relative; display: inline-flex; width: 36px; height: 36px; flex-shrink: 0; align-items: center; justify-content: center; }
-.pring svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.pring > svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
 .pring-track { fill: none; stroke: rgba(255, 255, 255, 0.08); stroke-width: 3.5; }
 .pring-value { fill: none; stroke: #5cc9dd; stroke-width: 3.5; stroke-linecap: round; transition: stroke-dashoffset .9s cubic-bezier(.22, 1, .36, 1); }
 @keyframes ring-rotate { to { transform: rotate(360deg); } }
 .pring-icon { position: relative; display: inline-flex; color: var(--accent-soft); animation: ring-rotate 1.2s linear infinite; }
 .pring.is-waiting .pring-icon { color: var(--dim); animation-duration: 2.6s; }
 .pring.is-waiting .pring-value { stroke: transparent; }
+.pring-icon svg { position: static; width: 14px; height: 14px; transform: none; }
