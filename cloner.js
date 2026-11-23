@@ -1633,13 +1633,70 @@ function injectClonerRuntimeEnhancer($, hasVfs = false, deferredModuleEntries = 
 /**
  * Create a ZIP archive from a directory
  */
-function createZipArchive(sourceDir, zipFilePath) {
+/**
+ * Adds "Open website.bat" / "Open website.command" + _siteclone/serve.(mjs|py) + a short guide.
+ * Browsers block ES modules, fetch(), many WebGL textures and some fonts on file:// pages;
+ * serving the folder from http://localhost makes the copy behave like the real website.
+ */
+const LAUNCHER_DIR = path.join(__dirname, 'launcher');
+function addLauncherFiles(siteDir, { url, pages, hasScripts }) {
+  try {
+    if (!hasScripts) return; // a static copy (no JavaScript) opens fine straight from index.html
+    const helperDir = path.join(siteDir, '_siteclone');
+    fs.mkdirSync(helperDir, { recursive: true });
+    fs.copyFileSync(path.join(LAUNCHER_DIR, 'serve.mjs'), path.join(helperDir, 'serve.mjs'));
+    fs.copyFileSync(path.join(LAUNCHER_DIR, 'serve.py'), path.join(helperDir, 'serve.py'));
+    // Windows batch files need CRLF line endings; the macOS/Linux script needs LF and the execute bit
+    const bat = fs.readFileSync(path.join(LAUNCHER_DIR, 'Open website.bat'), 'utf8').replace(/\r?\n/g, '\r\n');
+    fs.writeFileSync(path.join(siteDir, 'Open website.bat'), bat);
+    const sh = fs.readFileSync(path.join(LAUNCHER_DIR, 'Open website.command'), 'utf8').replace(/\r\n/g, '\n');
+    fs.writeFileSync(path.join(siteDir, 'Open website.command'), sh, { mode: 0o755 });
+    try {
+      fs.chmodSync(path.join(siteDir, 'Open website.command'), 0o755);
+    } catch {}
+    const guide = fs
+      .readFileSync(path.join(LAUNCHER_DIR, 'README.txt'), 'utf8')
+      .replace('{{URL}}', url)
+      .replace('{{PAGES}}', String(pages))
+      .replace('{{DATE}}', new Date().toISOString().slice(0, 10))
+      .replace(/\r?\n/g, '\r\n');
+    fs.writeFileSync(path.join(siteDir, 'HOW TO OPEN.txt'), guide);
+  } catch (err) {
+    console.error('[launcher] could not add launcher files:', err.message);
+  }
+}
+
+function dirSizeBytes(dir) {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {}
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else {
+        try {
+          total += fs.statSync(p).size;
+        } catch {}
+      }
+    }
+  }
+  return total;
+}
+
+function createZipArchive(sourceDir, zipFilePath, onProgress) {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(zipFilePath);
     const archive = archiver('zip', { zlib: { level: 3 } });
+    const totalBytes = onProgress ? dirSizeBytes(sourceDir) : 0;
 
     output.on('close', () => resolve(archive.pointer()));
     archive.on('error', (err) => reject(err));
+    if (onProgress) archive.on('progress', (p) => onProgress(p.fs.processedBytes, totalBytes || p.fs.totalBytes));
 
     archive.pipe(output);
     archive.directory(sourceDir, false);
@@ -1720,6 +1777,15 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
     const found = foundCount();
     lastFoundSent = found;
     rawEmitProgress({ found, ...ev });
+  };
+  // Progress inside one phase: maps i/n onto [from, to] and sends at most ~3 updates per second
+  let lastPhaseEmit = 0;
+  const phaseProgress = (from, to, i, n, title, extra = {}) => {
+    const now = Date.now();
+    if (i < n && now - lastPhaseEmit < 300) return;
+    lastPhaseEmit = now;
+    const pct = Math.round((from + (to - from) * Math.min(1, n ? i / n : 1)) * 10) / 10;
+    emitProgress({ pct, title, ...extra });
   };
   const noteFound = (norm) => {
     foundPages.add(norm);
@@ -2436,15 +2502,16 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
 
   // Step 2: Process HTML DOMs, ensure all referenced assets are downloaded, and rewrite links
   emitProgress({
-    pct: 80,
+    pct: 78,
     pages: capturedPages.length,
     assets: assetMap.size,
-    title: 'Processing DOM & downloading missing assets…',
+    title: 'Processing pages & downloading missing files…',
     log: `Inspecting ${capturedPages.length} page(s) and verifying local assets`,
     type: 'step',
   });
 
-    for (const pageItem of capturedPages) {
+    for (const [pageNo, pageItem] of capturedPages.entries()) {
+      phaseProgress(78, 86, pageNo, capturedPages.length, `Processing page ${pageNo + 1} of ${capturedPages.length}…`, { assets: assetMap.size });
       const $ = cheerio.load(fs.readFileSync(pageItem.rawPath, 'utf8'));
       const basePageUrl = pageItem.finalUrl || pageItem.url;
 
@@ -2728,16 +2795,17 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
     let hasVfs = false;
     if (saveAssets && rewriteLinks) {
       emitProgress({
-        pct: 88,
+        pct: 86,
         pages: capturedPages.length,
         assets: assetMap.size,
-        title: 'Rewriting CSS, JS & 3D VFS modules…',
+        title: 'Rewriting CSS & JavaScript for offline use…',
         log: 'Updating url() and building offline Virtual File System for ES modules & 3D assets',
         type: 'step',
       });
 
       const cssRecords = [...assetMap.values()].filter((a) => a.folder === 'css');
-      for (const cssAsset of cssRecords) {
+      for (const [cssNo, cssAsset] of cssRecords.entries()) {
+        phaseProgress(86, 88, cssNo, cssRecords.length, `Rewriting stylesheet ${cssNo + 1} of ${cssRecords.length}…`, { assets: assetMap.size });
         try {
           const rawCss = fs.readFileSync(cssAsset.diskPath, 'utf8');
           if (rawCss.includes('url(')) {
@@ -2775,7 +2843,9 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
 
       // Download all deferred 3D / binary assets directly via Node.js fetch (now that Chromium is closed & RAM is free!)
       if (deferredBinaryUrls.size > 0) {
+        let binNo = 0;
         for (const binUrl of deferredBinaryUrls) {
+          phaseProgress(88, 89, binNo++, deferredBinaryUrls.size, 'Downloading 3D & media files…', { assets: assetMap.size });
           await fetchAndSaveAsset(binUrl, 18000);
         }
       }
@@ -2789,7 +2859,8 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
           info.folder === 'other'
       );
       if (replaceableAssets.length > 0) {
-        for (const jsAsset of jsRecords) {
+        for (const [jsNo, jsAsset] of jsRecords.entries()) {
+          phaseProgress(89, 91, jsNo, jsRecords.length, `Rewriting script ${jsNo + 1} of ${jsRecords.length}…`, { assets: assetMap.size });
           try {
             let jsContent = fs.readFileSync(jsAsset.diskPath, 'utf8');
             let modified = false;
@@ -2832,7 +2903,8 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
 
     // Patch final HTML files with VFS + Runtime Enhancer snippets via cheap marker replacement (no re-parse).
     // "Remove all JavaScript": strip every script, module preload and inline event handler instead.
-    for (const pageItem of capturedPages) {
+    for (const [pageNo, pageItem] of capturedPages.entries()) {
+      phaseProgress(91, 93, pageNo, capturedPages.length, `Finishing page ${pageNo + 1} of ${capturedPages.length}…`);
       const parts = stripScripts
         ? { vfsBootHead: '', runtimeCss: '', runtimeScript: '' }
         : injectClonerRuntimeEnhancer(null, hasVfs, pageItem.deferredModuleEntries || []);
@@ -2866,10 +2938,17 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
       } catch {}
     }
 
+  // Step 3b: One-click launcher (a tiny local web server) so interactive features work after unzipping
+  addLauncherFiles(siteDir, {
+    url: startUrl,
+    pages: capturedPages.length,
+    hasScripts: !stripScripts,
+  });
+
   // Step 4: Package everything into a clean ZIP archive
   checkCancelled();
   emitProgress({
-    pct: 96,
+    pct: 93,
     pages: capturedPages.length,
     assets: assetMap.size,
     title: 'Creating ZIP archive…',
@@ -2877,7 +2956,9 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
     type: 'step',
   });
 
-  const zipBytes = await createZipArchive(siteDir, zipPath);
+  const zipBytes = await createZipArchive(siteDir, zipPath, (done, total) =>
+    phaseProgress(93, 98, done, total, `Creating ZIP archive… ${Math.round((done / Math.max(1, total)) * 100)}%`)
+  );
   const sizeFormatted = formatBytes(zipBytes);
 
   const summary = {
@@ -2900,10 +2981,10 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
   };
 
   emitProgress({
-    pct: 100,
+    pct: 98,
     pages: capturedPages.length,
     assets: assetMap.size,
-    title: 'Done! Your ZIP is ready.',
+    title: 'ZIP created — saving it…',
     log: `Completed! Cloned ${capturedPages.length} page(s) & ${assetMap.size} files (${sizeFormatted}).`,
     type: 'success',
     done: true,

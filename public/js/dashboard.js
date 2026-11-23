@@ -244,8 +244,22 @@
   const sigOf = (d, opts) =>
     [d.status, d.zip_available, d.preview_available, d.library_id, Boolean(d.stop_requested_at), d.error_code, state.notes[d.id]?.t || 0, opts.compact, opts.admin].join('|');
 
+  const RING_C = 2 * Math.PI * 16; // circumference of the progress ring
+  const ringHtml = (d) => {
+    const pct = Math.floor(state.anim[d.id]?.shown ?? d.progress?.pct ?? 0);
+    return `<span class="pring ${d.status === 'queued' ? 'is-waiting' : ''}" data-f="ring" title="${esc(stageText(d))}">
+      <svg viewBox="0 0 40 40" aria-hidden="true">
+        <circle cx="20" cy="20" r="16" class="pring-track" />
+        <circle cx="20" cy="20" r="16" class="pring-value" stroke-dasharray="${RING_C}" stroke-dashoffset="${RING_C * (1 - pct / 100)}" />
+        <circle cx="20" cy="20" r="19" class="pring-spin" />
+      </svg>
+      <span class="pring-label" data-f="ring-pct">${d.status === 'queued' ? '' : pct}</span>
+    </span>`;
+  };
+
   function actionsHtml(d, { admin = false } = {}) {
     const a = [];
+    if (isActive(d)) a.push(ringHtml(d));
     if (d.status === 'queued') {
       a.push(`<button data-action="stop" data-id="${d.id}" class="btn-stop flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold"><i data-lucide="circle-stop" class="h-3.5 w-3.5"></i>Stop</button>`);
     } else if (d.status === 'running') {
@@ -358,6 +372,7 @@
                 ${d.assets != null ? `<span class="flex items-center gap-1.5"><i data-lucide="boxes" class="h-3.5 w-3.5 text-dim"></i>${plural(d.assets, 'file')}</span>` : ''}
                 ${d.zip_size_bytes ? `<span class="flex items-center gap-1.5"><i data-lucide="file-archive" class="h-3.5 w-3.5 text-dim"></i>${formatBytes(d.zip_size_bytes)}</span>` : ''}
                 ${d.finished_at ? `<span class="flex items-center gap-1.5"><i data-lucide="timer" class="h-3.5 w-3.5 text-dim"></i>${elapsedOf(d)}</span>` : ''}
+                ${d.zip_available && d.zip_expires_at ? `<span class="flex items-center gap-1.5" title="ZIP files are deleted automatically after 24 hours"><i data-lucide="hourglass" class="h-3.5 w-3.5 text-dim"></i>Available until ${esc(fmtDate(d.zip_expires_at))}</span>` : ''}
                 ${d.stopped_early ? `<span class="badge bg-amber-300/10 text-amber-200">Stopped early</span>` : ''}
               </div>
               ${!compact && found ? `<p class="mt-2 text-xs text-dim">This website has more pages than your limit. Choose a higher “Maximum pages” to save more.</p>` : ''}`
@@ -442,7 +457,12 @@
     a.target = Math.max(a.target || 0, target);
     a.active = isActive(d);
     a.waiting = d.status === 'queued';
-    a.cap = d.status === 'processing' ? 97 : d.status === 'running' ? Math.min(a.target + 7, 77) : a.target;
+    a.cap =
+      d.status === 'processing'
+        ? Math.min(a.target + (a.target < 93 ? 3 : 1.5), 99.6)
+        : d.status === 'running'
+        ? Math.min(a.target + 7, 77)
+        : a.target;
     if (a.shown < a.target) a.shown = a.target;
   }
   setInterval(() => {
@@ -455,6 +475,10 @@
         const fill = bar.firstElementChild;
         const w = a.waiting ? 100 : a.shown;
         if (fill && fill.style.width !== `${w.toFixed(2)}%`) fill.style.width = `${w.toFixed(2)}%`;
+        const ringVal = li.querySelector('[data-f="ring"] .pring-value');
+        if (ringVal) ringVal.setAttribute('stroke-dashoffset', String(RING_C * (1 - (a.waiting ? 0 : a.shown) / 100)));
+        const ringPct = li.querySelector('[data-f="ring-pct"]');
+        if (ringPct && !a.waiting && ringPct.textContent !== String(Math.floor(a.shown))) ringPct.textContent = String(Math.floor(a.shown));
         const pctEl = li.querySelector('[data-f="pct"]');
         const p = String(Math.floor(a.waiting ? 0 : a.shown));
         if (pctEl && pctEl.textContent !== p) pctEl.textContent = p;

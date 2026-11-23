@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { runCloneJob, MAX_PAGES_LIMIT } = require('./cloner');
 const sb = require('./supabase'); // loads .env locally
+const r2 = require('./r2'); // Cloudflare R2 — where every ZIP is stored
 const { createStore } = require('./store');
 const { createAuth } = require('./auth');
 
@@ -53,8 +54,12 @@ const LIBRARY_DIR = path.join(STORAGE_DIR, 'library');
 [STORAGE_DIR, SITES_DIR, ZIPS_DIR, LIBRARY_DIR].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
 
 // Users, downloads & library live in Supabase (see supabase/schema.sql); ZIPs are copied to Supabase Storage
-const ZIP_BUCKET = 'zips';
+const ZIP_BUCKET = 'zips'; // Supabase Storage bucket (only used when R2 is not configured)
 const STORAGE_MAX_BYTES = 50 * 1024 * 1024; // Supabase Free: 50 MB per file
+// User ZIPs live in R2 for ZIP_RETENTION_HOURS (a bucket lifecycle rule deletes them); library ZIPs are kept
+const ZIP_RETENTION_HOURS = envInt('ZIP_RETENTION_HOURS', 24);
+const R2_PREFIX = 'r2:';
+const isR2 = (p) => typeof p === 'string' && p.startsWith(R2_PREFIX);
 const store = createStore();
 const auth = createAuth({ store });
 let dbReady = false;
@@ -386,7 +391,11 @@ function publicDownload(d) {
     queue_position: d.status === 'queued' ? d.queue_position || null : null,
     progress: d.progress || null,
     options: d.options || {},
-    zip_available: d.status === 'completed' && (Boolean(d.zip_storage_path) || fs.existsSync(zipPathOf(d.id))),
+    zip_available: d.status === 'completed' && (storedZipValid(d) || fs.existsSync(zipPathOf(d.id))),
+    zip_expires_at:
+      d.zip_storage_path && isR2(d.zip_storage_path) && d.finished_at
+        ? new Date(new Date(d.finished_at).getTime() + ZIP_RETENTION_HOURS * 3600000).toISOString()
+        : null,
     preview_available: d.status === 'completed' && fs.existsSync(path.join(siteDirOf(d.id), 'index.html')),
     library_id: d.library_id || null,
     logs: job ? job.logs.slice(-6) : [],
@@ -413,24 +422,41 @@ function cleanupFiles(id, { keepZip = false } = {}) {
   }
 }
 
-// Keep a copy of each finished ZIP in Supabase Storage, so it can still be downloaded after the
-// server restarts (Render Free wipes its disk when it sleeps or redeploys)
-async function backupZipToStorage(rec) {
-  const zipPath = zipPathOf(rec.id);
-  try {
-    const size = fs.statSync(zipPath).size;
-    if (!sb.configured || size > STORAGE_MAX_BYTES) return;
-    const key = `${rec.user_id}/${rec.id}.zip`;
-    await sb.storage.uploadFile(ZIP_BUCKET, key, zipPath);
-    const still = store.downloads.find((x) => x.id === rec.id);
-    if (still) store.downloads.update(rec.id, { zip_storage_path: key });
-    else sb.storage.remove(ZIP_BUCKET, key).catch(() => {});
-  } catch (err) {
-    console.error('[storage] ZIP backup failed:', err.message);
-  }
+// ---- ZIP storage: Cloudflare R2 (preferred) or Supabase Storage (fallback, up to 50 MB)
+function storedZipValid(d) {
+  if (!d.zip_storage_path) return false;
+  if (!isR2(d.zip_storage_path) || !d.finished_at) return true;
+  return Date.now() - new Date(d.finished_at).getTime() < ZIP_RETENTION_HOURS * 3600000; // R2 deletes it after this
+}
+async function storedLink(p, name, expiresIn = 3600) {
+  if (isR2(p)) return r2.signedUrl(p.slice(R2_PREFIX.length), expiresIn, name);
+  return sb.storage.signedUrl(ZIP_BUCKET, p, expiresIn, name);
+}
+function removeStored(p) {
+  if (!p) return;
+  if (isR2(p)) r2.remove(p.slice(R2_PREFIX.length)).catch(() => {});
+  else sb.storage.remove(ZIP_BUCKET, p).catch(() => {});
 }
 function removeStoredZip(d) {
-  if (d && d.zip_storage_path) sb.storage.remove(ZIP_BUCKET, d.zip_storage_path).catch(() => {});
+  if (d) removeStored(d.zip_storage_path);
+}
+/** Upload a finished ZIP. With R2 the local copy is deleted afterwards, so Render's disk stays empty. */
+async function storeZip(rec, onProgress) {
+  const zipPath = zipPathOf(rec.id);
+  if (r2.configured) {
+    const key = `zips/${rec.user_id}/${rec.id}.zip`;
+    await r2.uploadFile(key, zipPath, 'application/zip', onProgress);
+    try {
+      fs.rmSync(zipPath, { force: true });
+    } catch {}
+    return R2_PREFIX + key;
+  }
+  if (sb.configured && fs.statSync(zipPath).size <= STORAGE_MAX_BYTES) {
+    const key = `${rec.user_id}/${rec.id}.zip`;
+    await sb.storage.uploadFile(ZIP_BUCKET, key, zipPath);
+    return key;
+  }
+  return null; // stays on the server disk only
 }
 const zipNameOf = (d) => `${d.domain}-${(d.finished_at || d.created_at || '').slice(0, 10)}.zip`;
 
@@ -610,9 +636,31 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
         emitProgress
       );
       // The unzipped copy is only needed for previews; the ZIP is what users download
-      const rec = store.downloads.find((x) => x.id === id);
+      let rec = store.downloads.find((x) => x.id === id);
+      let storedPath = null;
+      if (rec) {
+        // Save the ZIP to cloud storage before showing it as ready (98% -> 100%)
+        try {
+          emitProgress({
+            pct: 98,
+            title: 'Saving the ZIP to cloud storage…',
+            log: `Uploading ${(summary.sizeBytes / 1048576).toFixed(1)} MB to ${r2.configured ? 'Cloudflare R2' : 'storage'}`,
+          });
+          storedPath = await storeZip(rec, (sent, total) => {
+            const now = Date.now();
+            if (now - (job.lastUploadEmit || 0) < 400 && sent < total) return;
+            job.lastUploadEmit = now;
+            const frac = sent / Math.max(1, total);
+            emitProgress({ pct: Math.round((98 + 1.9 * frac) * 10) / 10, title: `Saving the ZIP to cloud storage… ${Math.round(frac * 100)}%` });
+          });
+        } catch (err) {
+          console.error('[storage] ZIP upload failed:', err.message); // the local copy still works until the server restarts
+        }
+        rec = store.downloads.find((x) => x.id === id);
+      }
       if (rec) {
         Object.assign(rec, {
+          zip_storage_path: storedPath,
           status: 'completed',
           pages: summary.pagesCount,
           assets: summary.assetsCount,
@@ -622,9 +670,9 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
           progress: { pct: 100, title: 'Ready' },
         });
         store.downloads.save();
-        backupZipToStorage(rec);
       } else {
         cleanupFiles(id); // deleted while finishing
+        removeStored(storedPath);
       }
     } catch (err) {
       const rec = store.downloads.find((x) => x.id === id);
@@ -712,11 +760,11 @@ app.post('/api/website-downloads/:id/link', auth.requireAuth, async (req, res) =
   if (d.status !== 'completed') return res.status(400).json({ success: false, error: 'This download is not ready yet.' });
   const kind = req.body?.kind === 'preview' ? 'preview' : 'zip';
   if (kind === 'zip' && !fs.existsSync(zipPathOf(d.id))) {
-    if (!d.zip_storage_path) {
-      return res.status(410).json({ success: false, error: 'This ZIP has expired on the server. Please download the website again.' });
+    if (!storedZipValid(d)) {
+      return res.status(410).json({ success: false, error: `ZIP files are kept for ${ZIP_RETENTION_HOURS} hours. This one has expired — please download the website again.` });
     }
     try {
-      return res.json({ success: true, url: await sb.storage.signedUrl(ZIP_BUCKET, d.zip_storage_path, 3600, zipNameOf(d)) });
+      return res.json({ success: true, url: await storedLink(d.zip_storage_path, zipNameOf(d)) });
     } catch (err) {
       return res.status(410).json({ success: false, error: 'This ZIP is no longer available. Please download the website again.' });
     }
@@ -736,9 +784,8 @@ app.get('/api/website-downloads/:id/download', (req, res) => {
   if (!d || (d.user_id !== user.id && user.role !== 'admin')) return res.status(404).send('Download not found.');
   const zipPath = zipPathOf(d.id);
   if (!fs.existsSync(zipPath)) {
-    if (d.zip_storage_path) {
-      return sb.storage
-        .signedUrl(ZIP_BUCKET, d.zip_storage_path, 600, zipNameOf(d))
+    if (storedZipValid(d)) {
+      return storedLink(d.zip_storage_path, zipNameOf(d), 600)
         .then((u) => res.redirect(u))
         .catch(() => res.status(410).send('This ZIP is no longer available. Please download the website again.'));
     }
@@ -805,18 +852,26 @@ app.get('/api/library', auth.requireAuth, (req, res) => {
 app.post('/api/library', auth.requireAdmin, async (req, res) => {
   const d = store.downloads.find((x) => x.id === req.body?.downloadId);
   const hasLocal = Boolean(d) && fs.existsSync(zipPathOf(d.id));
-  if (!d || d.status !== 'completed' || (!hasLocal && !d.zip_storage_path)) {
+  if (!d || d.status !== 'completed' || (!hasLocal && !storedZipValid(d))) {
     return res.status(400).json({ success: false, error: 'Pick a finished download whose ZIP is still available.' });
   }
   const id = crypto.randomUUID();
   const key = `library/${id}.zip`;
   let storagePath = null;
   try {
-    if (d.zip_storage_path) await sb.storage.copy(ZIP_BUCKET, d.zip_storage_path, key);
-    else if (fs.statSync(zipPathOf(d.id)).size <= STORAGE_MAX_BYTES) await sb.storage.uploadFile(ZIP_BUCKET, key, zipPathOf(d.id));
-    else throw new Error('too large');
-    storagePath = key;
+    if (r2.configured) {
+      // library copies sit outside zips/, so the 24-hour rule never deletes them
+      if (isR2(d.zip_storage_path)) await r2.copy(d.zip_storage_path.slice(R2_PREFIX.length), key);
+      else await r2.uploadFile(key, zipPathOf(d.id));
+      storagePath = R2_PREFIX + key;
+    } else {
+      if (d.zip_storage_path) await sb.storage.copy(ZIP_BUCKET, d.zip_storage_path, key);
+      else if (fs.statSync(zipPathOf(d.id)).size <= STORAGE_MAX_BYTES) await sb.storage.uploadFile(ZIP_BUCKET, key, zipPathOf(d.id));
+      else throw new Error('too large');
+      storagePath = key;
+    }
   } catch (err) {
+    console.error('[library] copy failed:', err.message);
     // Too big for Storage (50 MB) or Storage unavailable: keep a local copy (lost when the server restarts)
     if (!hasLocal) return res.status(500).json({ success: false, error: 'Could not copy the ZIP to the library. Please try again.' });
     fs.copyFileSync(zipPathOf(d.id), libraryZipOf(id));
@@ -844,7 +899,7 @@ app.delete('/api/library/:id', auth.requireAdmin, (req, res) => {
   try {
     fs.rmSync(libraryZipOf(item.id), { force: true });
   } catch {}
-  if (item.storage_path) sb.storage.remove(ZIP_BUCKET, item.storage_path).catch(() => {});
+  removeStored(item.storage_path);
   for (const d of store.downloads.filter((x) => x.library_id === item.id)) d.library_id = null;
   store.downloads.save();
   store.library.remove(item.id);
@@ -857,7 +912,7 @@ app.post('/api/library/:id/link', auth.requireAuth, async (req, res) => {
   if (!item) return res.status(404).json({ success: false, error: 'Not found.' });
   if (item.storage_path) {
     try {
-      return res.json({ success: true, url: await sb.storage.signedUrl(ZIP_BUCKET, item.storage_path, 3600, `${item.domain}.zip`) });
+      return res.json({ success: true, url: await storedLink(item.storage_path, `${item.domain}.zip`) });
     } catch {}
   }
   if (!fs.existsSync(libraryZipOf(item.id))) return res.status(410).json({ success: false, error: 'This ZIP is no longer on the server.' });
@@ -1131,14 +1186,11 @@ function cleanupOldFiles() {
   }
   // Copies in Supabase Storage expire too (library copies are kept)
   if (!dbReady) return;
-  const expired = store.downloads.filter(
-    (d) => d.zip_storage_path && d.finished_at && new Date(d.finished_at).getTime() < cutoff
-  );
-  if (expired.length) {
-    sb.storage
-      .remove(ZIP_BUCKET, expired.map((d) => d.zip_storage_path))
-      .then(() => expired.forEach((d) => store.downloads.update(d.id, { zip_storage_path: null })))
-      .catch((err) => console.error("[storage] cleanup:", err.message));
+  // R2 deletes its own copies with the bucket lifecycle rule; the records are just marked as expired
+  const zipCutoff = Date.now() - ZIP_RETENTION_HOURS * 3600000;
+  for (const d of store.downloads.filter((x) => x.zip_storage_path && x.finished_at && new Date(x.finished_at).getTime() < zipCutoff)) {
+    if (!isR2(d.zip_storage_path)) removeStored(d.zip_storage_path);
+    store.downloads.update(d.id, { zip_storage_path: null });
   }
 }
 setInterval(cleanupOldFiles, 30 * 60 * 1000).unref();

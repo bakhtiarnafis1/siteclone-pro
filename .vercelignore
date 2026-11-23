@@ -18,3 +18,5 @@ store.js
 auth.js
 supabase.js
 supabase
+r2.js
+launcher
