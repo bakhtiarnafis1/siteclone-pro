@@ -4,258 +4,378 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%230e7f95%27/%3E%3Cpath d=%27M16 8v11m0 0-4.5-4.5M16 19l4.5-4.5M10 23h12%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.4%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E" />
-  <title>SiteClone — Download any website as clean, offline-ready code</title>
-  <meta name="description" content="Download a website you own or may use as a ZIP of real HTML, CSS, JavaScript and images — public pages or the pages behind your own login." />
+  <title>SiteClone — Download any website as clean, working code</title>
+  <meta name="description" content="Download a website you own or may use as a ZIP of real HTML, CSS, JavaScript, fonts and images — one page, a whole site, or the dashboards behind your own login." />
+  <meta property="og:title" content="SiteClone — Download any website as clean, working code" />
+  <meta property="og:description" content="Real-browser capture, page discovery, live progress and a ZIP that works offline." />
+  <meta property="og:image" content="/img/product-history.jpg" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/js/tw-config.js"></script>
   <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@500;600;700;800&family=Geist+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@500;600;700&family=Geist+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/site.css" />
 </head>
 <body class="font-sans">
 
-  <!-- ============ NAV ============ -->
-  <header class="sticky top-0 z-40 border-b border-slate-900/[0.06] bg-white/85 backdrop-blur-md">
-    <nav class="s-nav mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
-      <a href="/" class="flex items-center gap-2.5">
-        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 shadow-brand"><i data-lucide="arrow-down-to-line" class="h-4 w-4 text-white"></i></span>
-        <span class="font-display text-[15px] font-semibold tracking-tight">SiteClone</span>
+  <!-- ================= NAV ================= -->
+  <header class="sticky top-0 z-40 border-b border-slate-900/[0.07] bg-white/80 backdrop-blur-lg">
+    <nav class="nav wrap flex h-16 items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5" aria-label="SiteClone home">
+        <span class="flex h-8 w-8 items-center justify-center rounded-[9px] bg-brand-600"><i data-lucide="arrow-down-to-line" class="h-4 w-4 text-white"></i></span>
+        <span class="font-display text-[16px] font-semibold tracking-tight">SiteClone</span>
       </a>
       <div class="hidden items-center gap-8 md:flex">
-        <a href="#how" class="s-link">How it works</a>
-        <a href="#modes" class="s-link">Download modes</a>
-        <a href="#features" class="s-link">Features</a>
-        <a href="#faq" class="s-link">FAQ</a>
+        <a href="#modes" class="link">Product</a>
+        <a href="#how" class="link">How it works</a>
+        <a href="#use-cases" class="link">Use cases</a>
+        <a href="#pricing" class="link">Pricing</a>
+        <a href="#faq" class="link">FAQ</a>
       </div>
       <div class="flex items-center gap-2">
-        <a id="nav-login" href="/login" class="s-btn s-btn-ghost h-9 px-3.5 text-sm">Log in</a>
-        <a id="nav-cta" href="/register" class="s-btn s-btn-primary h-9 px-4 text-sm">Sign up free</a>
+        <a id="nav-login" href="/login" class="btn h-9 px-3.5 text-[14px] text-slate-700 hover:text-slate-950">Log in</a>
+        <a id="nav-cta" href="/register" class="btn btn-primary h-9 px-4">Get started</a>
       </div>
     </nav>
   </header>
 
   <main>
-    <!-- ============ HERO ============ -->
-    <section id="clone" class="hero-bg relative overflow-hidden border-b border-slate-900/[0.06] px-5 pb-20 pt-14 md:pb-24 md:pt-20">
-      <div class="grid-lines pointer-events-none absolute inset-0"></div>
-      <div class="relative mx-auto max-w-3xl text-center">
-        <span class="s-pill"><b>NEW</b>Backend HTML UI — save the pages behind your own login</span>
-        <h1 class="mt-6 text-[44px] font-extrabold leading-[1.02] text-slate-950 sm:text-6xl md:text-[68px]">Download any website.<br class="hidden sm:block" /> <span class="text-brand-700">Keep it offline.</span></h1>
-        <p class="mx-auto mt-6 max-w-2xl text-[17px] leading-relaxed text-slate-600">Get a website you own or may use as a ZIP of real HTML, CSS, JavaScript and images — one page, a whole site, or the dashboards you see after logging in. Nothing to install.</p>
+    <!-- ================= HERO ================= -->
+    <section id="clone" class="hero">
+      <div class="wrap relative pb-20 pt-16 text-center md:pt-24">
+        <a href="#modes" class="announce"><b>New</b>Save the pages behind your own login <i data-lucide="arrow-right" class="h-3.5 w-3.5 text-slate-400"></i></a>
 
-        <ul class="mx-auto mt-7 grid max-w-2xl gap-2.5 text-left text-[15px] text-slate-700 sm:grid-cols-2">
-          <li class="flex items-center gap-2.5"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>JavaScript sites captured as you see them</li>
-          <li class="flex items-center gap-2.5"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>Links rewritten to work offline</li>
-          <li class="flex items-center gap-2.5"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>Detects every page the site has</li>
-          <li class="flex items-center gap-2.5"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>Stop anytime — keep what's saved</li>
-        </ul>
+        <h1 class="hero-title mx-auto mt-7 max-w-4xl">Download any website as <em>clean, working code</em></h1>
+        <p class="lead mx-auto mt-6 max-w-2xl">SiteClone opens each page in a real browser and hands you a ZIP of its HTML, CSS, JavaScript, fonts and images — one page, a whole site, or the dashboards you see after signing in.</p>
 
-        <form id="clone-form" class="mx-auto mt-9 max-w-2xl text-left">
+        <form id="clone-form" class="js-clone-form mx-auto mt-10 max-w-2xl text-left" novalidate>
           <div class="flex justify-center">
-            <div class="s-tabs" role="tablist" aria-label="What kind of website is it?">
-              <button type="button" class="mode-tab s-tab is-active" data-mode="single_page"><i data-lucide="file" class="h-4 w-4"></i>Single<span class="hidden sm:inline">&nbsp;page</span></button>
-              <button type="button" class="mode-tab s-tab" data-mode="full_website"><i data-lucide="globe" class="h-4 w-4"></i><span class="hidden sm:inline">Full&nbsp;</span>website</button>
-              <button type="button" class="mode-tab s-tab" data-mode="cookie_export"><i data-lucide="lock-keyhole" class="h-4 w-4"></i><span class="hidden sm:inline">Backend HTML UI</span><span class="sm:hidden">Logged-in</span></button>
+            <div class="seg" role="tablist" aria-label="What to download">
+              <button type="button" class="mode-tab is-active" data-mode="single_page"><i data-lucide="file" class="h-4 w-4"></i><span class="sm:hidden">Page</span><span class="hidden sm:inline">Single page</span></button>
+              <button type="button" class="mode-tab" data-mode="full_website"><i data-lucide="globe" class="h-4 w-4"></i><span class="sm:hidden">Website</span><span class="hidden sm:inline">Full website</span></button>
+              <button type="button" class="mode-tab" data-mode="cookie_export"><i data-lucide="lock-keyhole" class="h-4 w-4"></i><span class="hidden sm:inline">Behind a login</span><span class="sm:hidden">Logged-in</span></button>
             </div>
           </div>
           <p id="mode-hint" class="mt-3 text-center text-[13px] text-slate-500">Just the page you enter — its links are not followed.</p>
 
-          <div class="mt-4 flex flex-col overflow-hidden rounded-xl border border-slate-900/15 bg-white shadow-soft focus-within:border-brand-500 focus-within:ring-4 focus-within:ring-brand-500/15 sm:flex-row">
+          <div class="urlbar relative mt-4">
+            <i data-lucide="globe" class="pointer-events-none absolute left-[22px] top-[30px] h-4 w-4 -translate-y-1/2 text-slate-400 sm:top-1/2"></i>
             <label for="target-url" class="sr-only">Website address</label>
-            <div class="relative flex-1">
-              <i data-lucide="link-2" class="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"></i>
-              <input id="target-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Enter a website link (e.g. example.com)" class="h-14 w-full bg-transparent pl-11 pr-4 text-[15px] text-slate-900 placeholder:text-slate-400 focus:outline-none" />
-            </div>
-            <button id="submit-clone-btn" type="submit" class="s-btn s-btn-primary h-14 rounded-none px-7 text-[15px]">
-              <i data-lucide="download" class="h-4 w-4"></i><span id="submit-btn-text">Download</span>
-            </button>
+            <input id="target-url" name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="example.com" />
+            <button id="submit-clone-btn" type="submit" class="btn btn-accent h-12 px-6 text-[15px]"><i data-lucide="download" class="h-4 w-4"></i><span id="submit-btn-text">Download</span></button>
           </div>
 
-          <div class="mt-4 flex flex-col items-center gap-1.5 text-[13px] text-slate-500">
-            <p id="auth-note" class="flex items-center gap-1.5"><i data-lucide="user-round" class="h-3.5 w-3.5"></i><span id="auth-note-text">Free account required — your downloads are kept in your dashboard.</span></p>
-            <p id="server-status" class="flex items-center gap-2" aria-live="polite">
-              <span id="server-status-dot" class="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-300"></span>
-              <span id="server-status-text">Checking server…</span>
-            </p>
+          <div class="mt-4 flex flex-col items-center justify-center gap-x-5 gap-y-1.5 text-[13px] text-slate-500 sm:flex-row">
+            <span id="auth-note" class="flex items-center gap-1.5"><i data-lucide="check" class="h-3.5 w-3.5 text-brand-600"></i><span id="auth-note-text">Free account · 10 downloads a month</span></span>
+            <span id="server-status" class="flex items-center gap-2" aria-live="polite"><span id="server-status-dot" class="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-300"></span><span id="server-status-text">Checking server…</span></span>
           </div>
         </form>
+
+        <!-- real product -->
+        <div class="reveal mx-auto mt-16 max-w-5xl">
+          <div class="frame">
+            <div class="frame-bar"><span class="frame-dots"><i></i><i></i><i></i></span><span class="frame-url">siteclone-pro-app.vercel.app/app#history</span><span class="w-[54px]"></span></div>
+            <img src="/img/product-history.jpg" width="2040" height="1290" alt="SiteClone dashboard: a full-website download at 52% with 584 pages found and 73 of 120 saved, above finished downloads ready as ZIP files" loading="eager" />
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- ============ THREE MODES ============ -->
-    <section id="modes" class="px-5 py-24">
-      <div class="mx-auto max-w-6xl">
+    <!-- ================= PLATFORMS ================= -->
+    <section class="border-b border-slate-900/[0.07] py-12">
+      <div class="wrap">
+        <p class="text-center text-[13px] font-medium text-slate-500">Captures sites built with</p>
+        <div class="platforms mt-5">
+          <span>WordPress</span><span>Webflow</span><span>Framer</span><span>Next.js</span><span>React</span><span>Shopify</span><span>Wix</span><span>Squarespace</span><span>Vue</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= MODES ================= -->
+    <section id="modes" class="section">
+      <div class="wrap">
+        <div class="max-w-2xl">
+          <p class="kicker">One downloader, three ways in</p>
+          <h2 class="h2 mt-3">Choose exactly how much of a site you need</h2>
+          <p class="lead mt-4">Every mode uses the same real-browser engine, so JavaScript-built pages come out the way you see them.</p>
+        </div>
+
+        <div class="mt-14 grid gap-5 lg:grid-cols-3">
+          <article class="card card-pad reveal flex flex-col">
+            <p class="num">01</p>
+            <h3 class="mt-4 text-[20px] font-semibold">Single page</h3>
+            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">The page you enter with all of its styles, fonts and images. Ready in under a minute.</p>
+            <div class="code mt-6 rounded-xl bg-slate-50 p-4">
+              <div><span class="dim">in </span> example.com/pricing</div>
+              <div><span class="dim">out</span> <span class="hl">index.html</span> + assets/</div>
+            </div>
+            <a href="#clone" data-pick="single_page" class="mt-auto inline-flex items-center gap-1.5 pt-6 text-[14px] font-semibold text-slate-900 hover:text-brand-700">Download a page <i data-lucide="arrow-right" class="h-4 w-4"></i></a>
+          </article>
+
+          <article class="card card-pad reveal flex flex-col">
+            <p class="num">02</p>
+            <h3 class="mt-4 text-[20px] font-semibold">Full website</h3>
+            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Every public page it can reach. The engine first counts the site's pages from its sitemap and links, then saves up to your limit.</p>
+            <div class="code mt-6 rounded-xl bg-slate-50 p-4">
+              <div><span class="dim">found</span>  <span class="hl">584</span> pages</div>
+              <div><span class="dim">saved</span>  120 pages · links rewritten</div>
+            </div>
+            <a href="#clone" data-pick="full_website" class="mt-auto inline-flex items-center gap-1.5 pt-6 text-[14px] font-semibold text-slate-900 hover:text-brand-700">Download a website <i data-lucide="arrow-right" class="h-4 w-4"></i></a>
+          </article>
+
+          <article class="card card-pad reveal flex flex-col">
+            <p class="num">03</p>
+            <h3 class="mt-4 text-[20px] font-semibold">Behind a login</h3>
+            <p class="mt-1 text-[12.5px] font-medium text-slate-400">Backend HTML UI</p>
+            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Dashboards, admin panels and members' areas of an account that is yours — signed in with your own exported cookies.</p>
+            <div class="code mt-6 rounded-xl bg-slate-50 p-4">
+              <div><span class="dim">in </span> app.example.com/dashboard</div>
+              <div><span class="dim">auth</span> your cookie export · used once</div>
+            </div>
+            <a href="#faq-login" data-pick="cookie_export" class="mt-auto inline-flex items-center gap-1.5 pt-6 text-[14px] font-semibold text-slate-900 hover:text-brand-700">How the cookie export works <i data-lucide="arrow-right" class="h-4 w-4"></i></a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= HOW IT WORKS ================= -->
+    <section id="how" class="section section-alt">
+      <div class="wrap">
         <div class="mx-auto max-w-2xl text-center">
-          <span class="s-eyebrow">Works with the sites you need</span>
-          <h2 class="mt-4 text-3xl font-bold text-slate-950 sm:text-[40px]">One downloader, three ways in</h2>
-          <p class="mt-4 text-[16px] leading-relaxed text-slate-600">Choose how much to save: one page, a whole public website, or the screens you only see after signing in.</p>
+          <p class="kicker">How it works</p>
+          <h2 class="h2 mt-3">From a link to a working copy in three steps</h2>
         </div>
-        <div class="mt-14 grid gap-5 md:grid-cols-3">
-          <div class="s-card p-7">
-            <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-700"><i data-lucide="file" class="h-5 w-5"></i></span>
-            <h3 class="mt-5 text-lg font-semibold text-slate-950">Single Page</h3>
-            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Exactly the page you enter, with its styles, fonts and images. Links are not followed.</p>
-            <p class="mt-5 font-mono text-xs text-slate-400">example.com/pricing → index.html</p>
-          </div>
-          <div class="s-card p-7">
-            <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-700"><i data-lucide="globe" class="h-5 w-5"></i></span>
-            <h3 class="mt-5 text-lg font-semibold text-slate-950">Full Website</h3>
-            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Every public page it can reach. The engine first counts all pages on the site, then saves up to your limit.</p>
-            <p class="mt-5 font-mono text-xs text-slate-400">196 pages found · 50 saved</p>
-          </div>
-          <div class="s-card relative p-7 ring-1 ring-brand-500/30">
-            <span class="absolute right-5 top-5 rounded-full bg-brand-600 px-2.5 py-0.5 text-[11px] font-semibold text-white">Popular</span>
-            <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-700"><i data-lucide="lock-keyhole" class="h-5 w-5"></i></span>
-            <h3 class="mt-5 text-lg font-semibold text-slate-950">Backend HTML UI</h3>
-            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Dashboards, admin panels and members' areas of an account that is yours — using your own session cookies.</p>
-            <p class="mt-5 font-mono text-xs text-slate-400">app.example.com/dashboard → ZIP</p>
-          </div>
-        </div>
+        <ol class="mt-16 grid gap-10 md:grid-cols-3 md:gap-8">
+          <li class="reveal">
+            <div class="flex items-center gap-4"><span class="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 font-mono text-[13px] text-white">1</span><span class="hidden h-px flex-1 bg-slate-900/10 md:block"></span></div>
+            <h3 class="mt-6 text-[18px] font-semibold">Paste the address</h3>
+            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Pick a mode and how many pages to save. Nothing to install, no settings to learn.</p>
+          </li>
+          <li class="reveal">
+            <div class="flex items-center gap-4"><span class="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 font-mono text-[13px] text-white">2</span><span class="hidden h-px flex-1 bg-slate-900/10 md:block"></span></div>
+            <h3 class="mt-6 text-[18px] font-semibold">We capture it in a real browser</h3>
+            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Each page loads in Chromium, scrolls to the end for lazy content and is saved after its JavaScript runs.</p>
+          </li>
+          <li class="reveal">
+            <div class="flex items-center gap-4"><span class="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 font-mono text-[13px] text-white">3</span><span class="hidden h-px flex-1 bg-slate-900/10 md:block"></span></div>
+            <h3 class="mt-6 text-[18px] font-semibold">Download the ZIP</h3>
+            <p class="mt-2 text-[15px] leading-relaxed text-slate-600">Links are rewritten to local files. Unzip it and open the site — offline, on any computer.</p>
+          </li>
+        </ol>
       </div>
     </section>
 
-    <!-- ============ HOW IT WORKS ============ -->
-    <section id="how" class="border-y border-slate-900/[0.06] bg-slate-50/70 px-5 py-24">
-      <div class="mx-auto grid max-w-6xl grid-cols-1 items-center gap-14 lg:grid-cols-2">
+    <!-- ================= LIVE PROGRESS ================= -->
+    <section class="section">
+      <div class="wrap grid grid-cols-1 items-center gap-14 lg:grid-cols-[0.9fr_1.1fr]">
         <div>
-          <span class="s-eyebrow">How it works</span>
-          <h2 class="mt-4 text-3xl font-bold text-slate-950 sm:text-[40px]">Paste a link. Watch it download.</h2>
-          <ol class="mt-8 space-y-6">
-            <li class="flex gap-4"><span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-950 font-mono text-xs font-medium text-white">1</span>
-              <div><p class="font-semibold text-slate-950">Paste the address</p><p class="mt-1 text-[15px] leading-relaxed text-slate-600">Pick Single page, Full website or Backend HTML UI and how many pages to save.</p></div></li>
-            <li class="flex gap-4"><span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-950 font-mono text-xs font-medium text-white">2</span>
-              <div><p class="font-semibold text-slate-950">A real browser captures it</p><p class="mt-1 text-[15px] leading-relaxed text-slate-600">Each page loads in Chromium, scrolls to the bottom and is saved after JavaScript runs. You see live progress, pages found and pages saved.</p></div></li>
-            <li class="flex gap-4"><span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-950 font-mono text-xs font-medium text-white">3</span>
-              <div><p class="font-semibold text-slate-950">Download the ZIP</p><p class="mt-1 text-[15px] leading-relaxed text-slate-600">Unzip, open index.html — it works offline. Stop early at any time and keep what's already saved.</p></div></li>
-          </ol>
+          <p class="kicker">Live progress</p>
+          <h2 class="h2 mt-3">See the whole site before you commit to it</h2>
+          <p class="lead mt-4">You know what you are getting while it happens — not after.</p>
+          <dl class="mt-9 space-y-6">
+            <div class="flex gap-4"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><div><dt class="font-semibold">Pages found vs. pages saved</dt><dd class="mt-1 text-[15px] text-slate-600">The engine reads the sitemap and follows links, so you see how big the site really is next to your limit.</dd></div></div>
+            <div class="flex gap-4"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><div><dt class="font-semibold">Stop at any moment</dt><dd class="mt-1 text-[15px] text-slate-600">Stop &amp; download zips the pages captured so far. Stopping while you wait in line costs nothing.</dd></div></div>
+            <div class="flex gap-4"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><div><dt class="font-semibold">Leave the tab</dt><dd class="mt-1 text-[15px] text-slate-600">Downloads keep running on the server and wait in your history. Failed downloads are never counted.</dd></div></div>
+          </dl>
         </div>
-
-        <!-- Progress mock -->
-        <div class="s-mock p-5 text-white">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2.5 text-[13px]"><span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-200 opacity-70"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-brand-200"></span></span><span class="font-semibold">Downloading</span><span class="text-white/50">books.example.com</span></div>
-            <span class="rounded-lg border border-white/15 px-2.5 py-1 text-[11px] font-medium text-white/80">■ Stop &amp; download</span>
+        <div class="reveal">
+          <div class="frame">
+            <img src="/img/product-progress.jpg" width="2040" height="726" alt="A download card at 52% with a spinning progress ring, a Stop & download button, 584 pages found and 73 of 120 pages saved" loading="lazy" />
           </div>
-          <div class="mt-5 flex items-end justify-between"><p class="font-display text-3xl font-semibold">64%</p><p class="text-[12px] text-white/50">Capturing page 32 of 50…</p></div>
-          <div class="pbar mt-3"><i></i></div>
-          <div class="mt-5 grid grid-cols-3 gap-2 text-[11px]">
-            <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"><p class="text-white/45">Pages found</p><p class="mt-0.5 font-display text-lg font-semibold">196</p></div>
-            <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"><p class="text-white/45">Saved</p><p class="mt-0.5 font-display text-lg font-semibold">32<span class="text-xs text-white/40"> / 50</span></p></div>
-            <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"><p class="text-white/45">Elapsed</p><p class="mt-0.5 font-display text-lg font-semibold">1:12</p></div>
-          </div>
-          <p class="mt-4 truncate rounded-lg bg-black/30 px-3 py-2 font-mono text-[11px] text-white/55">Visiting /catalogue/page-32.html → page-32.html</p>
         </div>
       </div>
     </section>
 
-    <!-- ============ FEATURES ============ -->
-    <section id="features" class="px-5 py-24">
-      <div class="mx-auto max-w-6xl">
-        <div class="mx-auto max-w-2xl text-center">
-          <span class="s-eyebrow">Features</span>
-          <h2 class="mt-4 text-3xl font-bold text-slate-950 sm:text-[40px]">Built for modern websites</h2>
-          <p class="mt-4 text-[16px] text-slate-600">Old downloaders break on React, Next.js and Framer sites. SiteClone doesn't.</p>
+    <!-- ================= OUTPUT ================= -->
+    <section class="section section-alt">
+      <div class="wrap grid grid-cols-1 items-center gap-14 lg:grid-cols-2">
+        <div class="order-2 lg:order-1 reveal">
+          <div class="card overflow-hidden">
+            <div class="flex items-center justify-between border-b border-slate-900/[0.07] px-5 py-3.5">
+              <span class="flex items-center gap-2 text-[14px] font-semibold"><i data-lucide="file-archive" class="h-4 w-4 text-brand-600"></i>example.com-2026.zip</span>
+              <span class="font-mono text-[12px] text-slate-400">5.5 MB</span>
+            </div>
+            <div class="code px-5 py-4">
+              <div class="flex justify-between"><span><span class="hl">Open website.bat</span></span><span class="dim">one-click launcher</span></div>
+              <div class="flex justify-between"><span>Open website.command</span><span class="dim">macOS / Linux</span></div>
+              <div class="flex justify-between"><span>HOW TO OPEN.txt</span><span class="dim"></span></div>
+              <div class="mt-2">index.html</div>
+              <div>pricing.html</div>
+              <div>about.html</div>
+              <div class="mt-2 flex justify-between"><span>assets/css/</span><span class="dim">6 files</span></div>
+              <div class="flex justify-between"><span>assets/js/</span><span class="dim">11 files</span></div>
+              <div class="flex justify-between"><span>assets/fonts/</span><span class="dim">4 files</span></div>
+              <div class="flex justify-between"><span>assets/images/</span><span class="dim">38 files</span></div>
+            </div>
+          </div>
         </div>
-        <div class="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          <div class="s-card-flat p-6"><i data-lucide="monitor-play" class="h-5 w-5 text-brand-600"></i><h3 class="mt-4 font-semibold text-slate-950">Real browser rendering</h3><p class="mt-2 text-[14.5px] leading-relaxed text-slate-600">Pages are captured after JavaScript runs, exactly as you see them.</p></div>
-          <div class="s-card-flat p-6"><i data-lucide="radar" class="h-5 w-5 text-brand-600"></i><h3 class="mt-4 font-semibold text-slate-950">Page discovery</h3><p class="mt-2 text-[14.5px] leading-relaxed text-slate-600">Reads the sitemap and follows links to show how many pages the site really has.</p></div>
-          <div class="s-card-flat p-6"><i data-lucide="wifi-off" class="h-5 w-5 text-brand-600"></i><h3 class="mt-4 font-semibold text-slate-950">Works offline</h3><p class="mt-2 text-[14.5px] leading-relaxed text-slate-600">Every link and file path is rewritten to point to the local copies.</p></div>
-          <div class="s-card-flat p-6"><i data-lucide="lock-keyhole" class="h-5 w-5 text-brand-600"></i><h3 class="mt-4 font-semibold text-slate-950">Pages behind a login</h3><p class="mt-2 text-[14.5px] leading-relaxed text-slate-600">Capture your own dashboards and admin panels with your session cookies.</p></div>
-          <div class="s-card-flat p-6"><i data-lucide="circle-stop" class="h-5 w-5 text-brand-600"></i><h3 class="mt-4 font-semibold text-slate-950">Stop at any moment</h3><p class="mt-2 text-[14.5px] leading-relaxed text-slate-600">Stop a running download and get a ZIP of the pages saved so far.</p></div>
-          <div class="s-card-flat p-6"><i data-lucide="sparkles" class="h-5 w-5 text-brand-600"></i><h3 class="mt-4 font-semibold text-slate-950">Ready for AI coding tools</h3><p class="mt-2 text-[14.5px] leading-relaxed text-slate-600">Drop the folder into Claude Code or Cursor as a real design reference.</p></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ OUTPUT ============ -->
-    <section class="border-t border-slate-900/[0.06] px-5 py-24">
-      <div class="mx-auto grid max-w-6xl grid-cols-1 items-center gap-14 md:grid-cols-2">
-        <div>
-          <span class="s-eyebrow">The output</span>
-          <h2 class="mt-4 text-3xl font-bold text-slate-950 sm:text-[40px]">A tidy folder, not a mess.</h2>
-          <p class="mt-4 text-[16px] leading-relaxed text-slate-600">Each page becomes its own HTML file. Styles, scripts, fonts and images go into clearly named folders.</p>
-          <ul class="mt-6 space-y-3 text-[15px] text-slate-700">
-            <li class="flex items-center gap-3"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>Open index.html in any browser</li>
-            <li class="flex items-center gap-3"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>Real class names and CSS variables</li>
-            <li class="flex items-center gap-3"><span class="s-check"><i data-lucide="check" class="h-3 w-3"></i></span>Original fonts and image quality</li>
+        <div class="order-1 lg:order-2">
+          <p class="kicker">What you get back</p>
+          <h2 class="h2 mt-3">A tidy folder that opens like the real site</h2>
+          <p class="lead mt-4">Each page is its own HTML file. Styles, scripts, fonts and images sit in clearly named folders with every link pointing to the local copy.</p>
+          <ul class="mt-8 space-y-4 text-[15px] text-slate-700">
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><span><b class="font-semibold text-slate-900">Double-click index.html</b> to look through the pages.</span></li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><span><b class="font-semibold text-slate-900">Open website.bat</b> starts a tiny local server, so animations, 3D and scripts run exactly as online — nothing leaves your computer.</span></li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><span>Real class names, CSS variables and original image quality — useful as a reference, not a screenshot.</span></li>
           </ul>
         </div>
-        <div class="s-card p-5">
-          <div class="mb-4 flex items-center justify-between border-b border-slate-900/[0.07] pb-3">
-            <span class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="folder-archive" class="h-4 w-4 text-brand-600"></i>example-com.zip</span>
-            <span class="font-mono text-xs text-slate-400">4.2 MB</span>
-          </div>
-          <div class="space-y-1.5 font-mono text-[13px] text-slate-600">
-            <div class="flex items-center gap-2 font-medium text-slate-950"><i data-lucide="file-code" class="h-4 w-4 text-brand-600"></i>index.html</div>
-            <div class="flex items-center gap-2"><i data-lucide="file-code" class="h-4 w-4 text-slate-400"></i>about.html</div>
-            <div class="flex items-center gap-2"><i data-lucide="file-code" class="h-4 w-4 text-slate-400"></i>pricing.html</div>
-            <div class="flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-brand-600"></i>assets/</div>
-            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-slate-400"></i>css/<span class="ml-auto text-xs text-slate-400">6 files</span></div>
-            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-slate-400"></i>js/<span class="ml-auto text-xs text-slate-400">11 files</span></div>
-            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-slate-400"></i>fonts/<span class="ml-auto text-xs text-slate-400">4 files</span></div>
-            <div class="ml-6 flex items-center gap-2"><i data-lucide="folder" class="h-4 w-4 text-slate-400"></i>images/<span class="ml-auto text-xs text-slate-400">38 files</span></div>
-          </div>
+      </div>
+    </section>
+
+    <!-- ================= USE CASES ================= -->
+    <section id="use-cases" class="section">
+      <div class="wrap">
+        <div class="max-w-2xl">
+          <p class="kicker">Use cases</p>
+          <h2 class="h2 mt-3">What people use it for</h2>
+        </div>
+        <div class="mt-14 grid gap-px overflow-hidden rounded-2xl border border-slate-900/[0.08] bg-slate-900/[0.08] md:grid-cols-2">
+          <div class="bg-white p-8 reveal"><p class="num">Backups</p><h3 class="mt-3 text-[18px] font-semibold">Keep an offline copy of your site</h3><p class="mt-2 text-[15px] leading-relaxed text-slate-600">Before a redesign, a platform move or a cancelled subscription — keep every page exactly as it was.</p></div>
+          <div class="bg-white p-8 reveal"><p class="num">Migration</p><h3 class="mt-3 text-[18px] font-semibold">Move your site to a new stack</h3><p class="mt-2 text-[15px] leading-relaxed text-slate-600">Give Claude Code or Cursor the real HTML and CSS of your own site and rebuild it on the framework you want.</p></div>
+          <div class="bg-white p-8 reveal"><p class="num">Design reference</p><h3 class="mt-3 text-[18px] font-semibold">Learn from sites people trust</h3><p class="mt-2 text-[15px] leading-relaxed text-slate-600">Study real layouts, type scales and spacing instead of guessing — then design something of your own.</p></div>
+          <div class="bg-white p-8 reveal"><p class="num">Internal tools</p><h3 class="mt-3 text-[18px] font-semibold">Archive your own dashboards</h3><p class="mt-2 text-[15px] leading-relaxed text-slate-600">Save signed-in screens of your accounts for documentation, audits, hand-offs or offline demos.</p></div>
         </div>
       </div>
     </section>
 
-    <!-- ============ FAQ ============ -->
-    <section id="faq" class="border-t border-slate-900/[0.06] bg-slate-50/70 px-5 py-24">
-      <div class="mx-auto max-w-3xl">
-        <h2 class="text-center text-3xl font-bold text-slate-950 sm:text-[40px]">Questions</h2>
-        <div class="mt-10 space-y-3">
-          <details class="s-faq s-card-flat px-5 py-4">
-            <summary class="flex items-center justify-between gap-4 text-[15px] font-semibold text-slate-900">Can it download a site's backend code?<i data-lucide="plus" class="s-plus h-4 w-4 shrink-0 text-slate-400"></i></summary>
-            <p class="mt-3 text-[14.5px] leading-relaxed text-slate-600">No. Server code and databases never leave the server. You get everything the browser receives: HTML, CSS, JavaScript, fonts and images — including the HTML of signed-in screens with the Backend HTML UI mode.</p>
-          </details>
-          <details class="s-faq s-card-flat px-5 py-4">
-            <summary class="flex items-center justify-between gap-4 text-[15px] font-semibold text-slate-900">Does it work with React, Next.js or Framer sites?<i data-lucide="plus" class="s-plus h-4 w-4 shrink-0 text-slate-400"></i></summary>
-            <p class="mt-3 text-[14.5px] leading-relaxed text-slate-600">Yes. Pages are opened in a real Chromium browser and captured after the JavaScript has finished rendering.</p>
-          </details>
-          <details class="s-faq s-card-flat px-5 py-4">
-            <summary class="flex items-center justify-between gap-4 text-[15px] font-semibold text-slate-900">Do I need an account?<i data-lucide="plus" class="s-plus h-4 w-4 shrink-0 text-slate-400"></i></summary>
-            <p class="mt-3 text-[14.5px] leading-relaxed text-slate-600">Yes — a free account. Your downloads, ZIP files and remaining monthly downloads are kept in your dashboard. A download that fails is not counted.</p>
-          </details>
-          <details id="faq-login" class="s-faq s-card-flat px-5 py-4">
-            <summary class="flex items-center justify-between gap-4 text-[15px] font-semibold text-slate-900">How do I capture pages behind a login?<i data-lucide="plus" class="s-plus h-4 w-4 shrink-0 text-slate-400"></i></summary>
-            <p class="mt-3 text-[14.5px] leading-relaxed text-slate-600">Log in to the site in your own browser, export its cookies as JSON with the free Cookie-Editor extension, and paste them into the Backend HTML UI option in your dashboard. If the site keeps the login in local storage, the form shows a one-line command to copy that too. Only do this for accounts you own or are allowed to use.</p>
-          </details>
-          <details class="s-faq s-card-flat px-5 py-4">
-            <summary class="flex items-center justify-between gap-4 text-[15px] font-semibold text-slate-900">Which sites am I allowed to download?<i data-lucide="plus" class="s-plus h-4 w-4 shrink-0 text-slate-400"></i></summary>
-            <p class="mt-3 text-[14.5px] leading-relaxed text-slate-600">Your own sites, sites you have permission for, and public pages for personal reference and learning. Don't republish other people's content or designs as your own.</p>
-          </details>
+    <!-- ================= COMPARISON ================= -->
+    <section class="section section-alt">
+      <div class="wrap">
+        <div class="mx-auto max-w-2xl text-center">
+          <p class="kicker">Why SiteClone</p>
+          <h2 class="h2 mt-3">Built for how websites are made today</h2>
+          <p class="lead mt-4">Browser "Save page as" and older desktop crawlers were made for static pages.</p>
+        </div>
+        <div class="card mt-14 overflow-x-auto reveal">
+          <table class="cmp min-w-[680px]">
+            <thead>
+              <tr><th class="w-[40%]"></th><th class="us">SiteClone</th><th>Save page as</th><th>Desktop crawlers</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Pages built with JavaScript</td><td class="us yes">Captured after they render</td><td class="part">Partly</td><td class="no">Often blank</td></tr>
+              <tr><td>Whole website in one go</td><td class="us yes">Yes</td><td class="no">One page at a time</td><td class="yes">Yes</td></tr>
+              <tr><td>Count of pages before you download</td><td class="us yes">Yes, live</td><td class="no">—</td><td class="no">—</td></tr>
+              <tr><td>Pages behind your own login</td><td class="us yes">Yes</td><td class="yes">One page</td><td class="part">Complicated setup</td></tr>
+              <tr><td>Stop early and keep what's saved</td><td class="us yes">Yes</td><td class="no">—</td><td class="part">Sometimes</td></tr>
+              <tr><td>Links rewritten for offline use</td><td class="us yes">Yes</td><td class="no">No</td><td class="yes">Yes</td></tr>
+              <tr><td>Nothing to install</td><td class="us yes">Runs in the cloud</td><td class="yes">Built in</td><td class="no">Desktop app</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>
 
-    <!-- ============ CTA ============ -->
-    <section class="px-5 py-24">
-      <div class="mx-auto max-w-6xl overflow-hidden rounded-3xl bg-slate-950 px-6 py-16 text-center text-white" style="background: radial-gradient(70% 120% at 50% 0%, rgba(21,147,171,.35) 0%, rgba(11,18,21,1) 70%);">
-        <h2 class="text-3xl font-bold sm:text-[40px]">Found a site you need?</h2>
-        <p class="mx-auto mt-3 max-w-md text-[16px] text-white/65">Paste the link and have it on your computer in minutes.</p>
-        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <a href="#clone" class="s-btn s-btn-primary h-11 px-6 text-sm">Download a website</a>
-          <a href="/app" class="js-dash-link s-btn h-11 border border-white/20 px-6 text-sm text-white hover:bg-white/10">Open dashboard</a>
+    <!-- ================= PRICING ================= -->
+    <section id="pricing" class="section">
+      <div class="wrap grid grid-cols-1 items-start gap-12 lg:grid-cols-[0.9fr_1.1fr]">
+        <div>
+          <p class="kicker">Pricing</p>
+          <h2 class="h2 mt-3">Start free. Every feature included.</h2>
+          <p class="lead mt-4">One plan with every download mode. A download that fails is never counted, and websites in the shared library are free to download.</p>
+          <p class="mt-6 text-[14px] text-slate-500">Need more downloads for your team? Higher limits are set per account.</p>
+        </div>
+        <div class="card reveal overflow-hidden">
+          <div class="flex flex-wrap items-end justify-between gap-4 border-b border-slate-900/[0.07] p-8">
+            <div>
+              <p class="text-[15px] font-semibold">Free</p>
+              <p class="mt-2 flex items-baseline gap-1.5"><span class="font-display text-[44px] font-semibold leading-none tracking-tight">$0</span><span class="text-slate-500">/ month</span></p>
+            </div>
+            <a href="/register" class="js-signup btn btn-primary h-11 px-6">Create free account</a>
+          </div>
+          <ul class="grid gap-x-8 gap-y-4 p-8 text-[15px] text-slate-700 sm:grid-cols-2">
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span>10 website downloads a month</li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><span>Up to <span class="js-max-pages">100</span> pages per download</span></li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><span>Single page, full website &amp; behind a login</span></li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span><span>Live progress &amp; stop anytime</span></li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span>Download history in your dashboard</li>
+            <li class="flex gap-3"><span class="tick mt-0.5"><i data-lucide="check" class="h-3 w-3"></i></span>ZIPs kept for 24 hours</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FAQ ================= -->
+    <section id="faq" class="section section-alt">
+      <div class="wrap grid grid-cols-1 gap-12 lg:grid-cols-[0.8fr_1.2fr]">
+        <div>
+          <p class="kicker">FAQ</p>
+          <h2 class="h2 mt-3">Questions, answered</h2>
+          <p class="lead mt-4">Still unsure? Create a free account and try it on your own site.</p>
+        </div>
+        <div class="border-t border-slate-900/[0.09]">
+          <details class="faq"><summary>Can it download a website's backend code?<i data-lucide="plus" class="plus h-5 w-5 shrink-0"></i></summary>
+            <p>No. Server code and databases never leave the server. You get everything a browser receives — HTML, CSS, JavaScript, fonts and images — including the HTML of signed-in screens when you use the Behind a login mode.</p></details>
+          <details class="faq"><summary>Does it work with React, Next.js or Framer sites?<i data-lucide="plus" class="plus h-5 w-5 shrink-0"></i></summary>
+            <p>Yes. Pages are opened in a real Chromium browser and saved after their JavaScript has rendered. Interactive parts like sliders and 3D run when you open the copy with the included launcher.</p></details>
+          <details class="faq" id="faq-login"><summary>How do I save pages behind a login?<i data-lucide="plus" class="plus h-5 w-5 shrink-0"></i></summary>
+            <p>Sign in to the site in your own browser, export its cookies as JSON with the free Cookie-Editor extension, and paste them into the Behind a login mode. If the site keeps its login in local storage, the form gives you a one-line command for that too. Your cookies are used once and never stored. Only do this for accounts you own or may use.</p></details>
+          <details class="faq"><summary>Why is there an "Open website.bat" file in the ZIP?<i data-lucide="plus" class="plus h-5 w-5 shrink-0"></i></summary>
+            <p>Browsers block JavaScript modules, data loading and many 3D textures on files opened straight from your disk. The launcher serves the folder from your own computer at localhost, so the copy behaves exactly like the real site. Opening index.html directly still works for looking through the pages.</p></details>
+          <details class="faq"><summary>How long are my ZIP files kept?<i data-lucide="plus" class="plus h-5 w-5 shrink-0"></i></summary>
+            <p>24 hours, then they are deleted automatically. Your download history stays in your dashboard, and you can run a download again at any time.</p></details>
+          <details class="faq"><summary>Which websites am I allowed to download?<i data-lucide="plus" class="plus h-5 w-5 shrink-0"></i></summary>
+            <p>Your own sites, sites you have permission for, and public pages for personal reference and learning. Don't republish other people's content or designs as your own.</p></details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FINAL CTA ================= -->
+    <section class="section">
+      <div class="wrap">
+        <div class="mx-auto max-w-3xl text-center">
+          <h2 class="h2">Paste a link and get your files</h2>
+          <p class="lead mt-4">Free account, ten downloads a month, no card needed.</p>
+          <form class="js-clone-form mx-auto mt-9 max-w-xl text-left" novalidate>
+            <div class="urlbar relative">
+              <i data-lucide="globe" class="pointer-events-none absolute left-[22px] top-[30px] h-4 w-4 -translate-y-1/2 text-slate-400 sm:top-1/2"></i>
+              <input name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="example.com" aria-label="Website address" />
+              <button type="submit" class="btn btn-accent h-12 px-6 text-[15px]"><i data-lucide="download" class="h-4 w-4"></i>Download</button>
+            </div>
+          </form>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- ============ FOOTER ============ -->
-  <footer class="border-t border-slate-900/[0.07] px-5 py-10">
-    <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-[13px] text-slate-500 sm:flex-row">
-      <span class="flex items-center gap-2 font-medium text-slate-700">
-        <span class="flex h-6 w-6 items-center justify-center rounded-md bg-brand-600"><i data-lucide="arrow-down-to-line" class="h-3.5 w-3.5 text-white"></i></span>
-        SiteClone
-      </span>
-      <div class="flex items-center gap-6">
-        <a href="#how" class="hover:text-slate-900">How it works</a>
-        <a href="#faq" class="hover:text-slate-900">FAQ</a>
-        <a href="/login" class="hover:text-slate-900">Log in</a>
+  <!-- ================= FOOTER ================= -->
+  <footer class="border-t border-slate-900/[0.08] bg-[#fbfcfc]">
+    <div class="wrap grid gap-10 py-14 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
+      <div>
+        <a href="/" class="flex items-center gap-2.5">
+          <span class="flex h-7 w-7 items-center justify-center rounded-[8px] bg-brand-600"><i data-lucide="arrow-down-to-line" class="h-3.5 w-3.5 text-white"></i></span>
+          <span class="font-display text-[15px] font-semibold">SiteClone</span>
+        </a>
+        <p class="mt-4 max-w-xs text-[14px] leading-relaxed text-slate-500">Download websites you own or may use as clean, working code.</p>
       </div>
-      <span>Only download websites you own or may copy.</span>
+      <div>
+        <p class="text-[13px] font-semibold text-slate-900">Product</p>
+        <ul class="mt-4 space-y-2.5 text-[14px] text-slate-500">
+          <li><a href="#modes" class="hover:text-slate-900">Download modes</a></li>
+          <li><a href="#how" class="hover:text-slate-900">How it works</a></li>
+          <li><a href="#pricing" class="hover:text-slate-900">Pricing</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="text-[13px] font-semibold text-slate-900">Resources</p>
+        <ul class="mt-4 space-y-2.5 text-[14px] text-slate-500">
+          <li><a href="#use-cases" class="hover:text-slate-900">Use cases</a></li>
+          <li><a href="#faq" class="hover:text-slate-900">FAQ</a></li>
+          <li><a href="/app#tutorial" class="js-dash-link hover:text-slate-900">Tutorial</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="text-[13px] font-semibold text-slate-900">Account</p>
+        <ul class="mt-4 space-y-2.5 text-[14px] text-slate-500">
+          <li><a href="/login" class="hover:text-slate-900">Log in</a></li>
+          <li><a href="/register" class="hover:text-slate-900">Create account</a></li>
+          <li><a href="/app" class="js-dash-link hover:text-slate-900">Dashboard</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="wrap flex flex-col justify-between gap-2 border-t border-slate-900/[0.07] py-6 text-[13px] text-slate-400 sm:flex-row">
+      <span>© <span id="year">2026</span> SiteClone</span>
+      <span>Only download websites you own or are allowed to copy.</span>
     </div>
   </footer>
 
