@@ -575,7 +575,7 @@
         <span><span class="font-semibold text-white">${esc(a.plan)} · unlimited downloads</span><span class="block text-xs text-dim">A download that fails is never counted.</span></span>`;
     }
     const pct = a.limit ? Math.round((a.remaining / a.limit) * 100) : 0;
-    return `<span class="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style="background: conic-gradient(#a5b4fc ${pct * 3.6}deg, rgba(255,255,255,.08) 0)"><span class="absolute inset-[3px] rounded-full bg-ink-900"></span></span>
+    return `<span class="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style="background: conic-gradient(#5fd6d7 ${pct * 3.6}deg, rgba(255,255,255,.08) 0)"><span class="absolute inset-[3px] rounded-full bg-ink-900"></span></span>
       <span class="flex-1"><span class="font-semibold text-white">${esc(a.plan)} plan · ${a.remaining} of ${a.limit} downloads left</span>
       <span class="block text-xs text-dim">Resets ${fmtDay(a.resetsAt)}. A download that fails is not counted.</span></span>
       ${a.remaining <= 0 ? '<a href="#settings" class="btn-ghost rounded-lg px-3 py-1.5 text-xs font-semibold">Plan details</a>' : ''}`;

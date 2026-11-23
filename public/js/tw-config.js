@@ -11,17 +11,17 @@ tailwind.config = {
       colors: {
         // dashboard surfaces (graphite)
         ink: { 950: '#0f1012', 900: '#16171a', 800: '#1c1e21', 700: '#26292d', 600: '#33373c' },
-        // brand teal
-        accent: { DEFAULT: '#5b5bd6', soft: '#a5b4fc', deep: '#4646c4' },
-        brand: { 50: '#f6f6ff', 100: '#e5e7ff', 200: '#c7cbfd', 500: '#6c6ae0', 600: '#5b5bd6', 700: '#4646c4', 800: '#3a379a', 900: '#2c2a75', 950: '#1c1b47' },
+        // brand colour #01a3a4
+        accent: { DEFAULT: '#01a3a4', soft: '#5fd6d7', deep: '#018a8b' },
+        brand: { 50: '#f0fbfb', 100: '#d0f3f3', 200: '#a3e6e6', 500: '#14b5b6', 600: '#01a3a4', 700: '#018a8b', 800: '#036c6d', 900: '#0a5354', 950: '#053536' },
         mint: '#4ade80',
         body: '#a1a6ad',
         dim: '#6d727a',
       },
       boxShadow: {
-        soft: '0 16px 44px rgba(28, 27, 71, 0.07)',
-        lift: '0 24px 60px -20px rgba(28, 27, 71, 0.25)',
-        brand: '0 8px 22px -6px rgba(91, 91, 214, 0.45)',
+        soft: '0 16px 44px rgba(5, 53, 54, 0.07)',
+        lift: '0 24px 60px -20px rgba(5, 53, 54, 0.25)',
+        brand: '0 8px 22px -6px rgba(1, 163, 164, 0.45)',
       },
     },
   },
