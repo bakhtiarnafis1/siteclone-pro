@@ -201,6 +201,7 @@
     patchList($('#dash-recent'), state.downloads.slice(0, 5), { empty: 'dashboard', compact: true });
     if ($('#history-list')) renderHistoryList();
     if ($('#admin-live')) patchList($('#admin-live'), state.adminDownloads.filter(isActive), { empty: 'admin', admin: true });
+    if ($('#admin-mine') && !$('[data-panel="mine"]').classList.contains('hidden')) patchList($('#admin-mine'), state.downloads, { empty: 'dashboard' });
     const stats = $('#dash-stats');
     if (stats) stats.innerHTML = dashStatsHtml();
     const banner = $('#allowance-banner');
@@ -1431,9 +1432,22 @@
     view.innerHTML = `
       ${pageHeader('shield-check', 'Admin panel', 'Users, download limits and everything downloaded on this server. Data is stored in Supabase.',
         `<div class="flex items-center gap-2 self-start text-xs text-dim sm:self-auto"><span class="live-dot"></span>Live · updates automatically</div>`)}
+      <div class="mb-8 flex gap-1 overflow-x-auto border-b border-white/[0.07]" role="tablist">
+        ${[
+          ['overview', 'layout-dashboard', 'Overview'],
+          ['users', 'users', 'Users'],
+          ['downloads', 'cloud-download', 'All downloads'],
+          ['mine', 'user-round', 'My downloads'],
+          ['settings', 'sliders-horizontal', 'Site settings'],
+          ['approvals', 'user-check', 'Approvals'],
+        ]
+          .map(([k, ic, l]) => `<button type="button" role="tab" data-atab="${k}" class="admin-tab flex shrink-0 items-center gap-2 border-b-2 border-transparent px-4 pb-3 pt-1 text-sm font-medium text-body transition hover:text-white"><i data-lucide="${ic}" class="h-4 w-4"></i>${l}${k === 'approvals' ? '<span id="tab-pending" class="hidden rounded-full bg-amber-400/15 px-1.5 text-[11px] font-semibold text-amber-300"></span>' : ''}</button>`)
+          .join('')}
+      </div>
+      <div data-panel="overview">
       <div id="admin-stats" class="grid grid-cols-2 gap-3 sm:grid-cols-4"></div>
 
-      <section class="mt-10">
+        <section class="mt-10">
         <div class="mb-4 flex items-center justify-between">
           <h2 class="text-lg font-semibold">Live activity</h2>
           <span id="admin-server" class="text-xs text-dim"></span>
@@ -1441,9 +1455,10 @@
         <ul id="admin-live" class="space-y-3"></ul>
       </section>
 
-      <section class="mt-10">
+      </div>
+      <section data-panel="settings" class="hidden">
         <h2 class="mb-4 text-lg font-semibold">Site settings</h2>
-        <form id="admin-settings" class="card grid gap-5 rounded-2xl p-5 md:grid-cols-[1fr_1fr_auto] md:items-end">
+        <form id="admin-settings" class="card grid gap-6 rounded-2xl p-6 md:grid-cols-2 md:items-start">
           <div><label class="mb-1.5 block text-xs font-semibold text-body" for="set-default-limit">Downloads for new users (per ${state.config.periodDays || 30} days)</label>
             <input id="set-default-limit" type="number" min="0" class="field py-2" placeholder="Unlimited" /></div>
           <div class="space-y-3">
@@ -1452,7 +1467,7 @@
             <label class="flex items-center gap-3 text-sm"><input id="set-one-ip" type="checkbox" class="h-4 w-4" /><span>One account per IP address<span class="block text-xs text-dim">Untick if genuine users share a network (offices, mobile data).</span></span></label>
             <label class="flex items-center gap-3 text-sm"><input id="set-one-device" type="checkbox" class="h-4 w-4" /><span>One account per device<span class="block text-xs text-dim">Blocks a second sign-up from the same browser.</span></span></label>
           </div>
-          <div class="flex flex-wrap items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-5 md:col-span-2">
             <button class="btn-primary rounded-lg px-4 py-2 text-xs font-semibold">Save settings</button>
             <button type="button" id="apply-default" class="btn-ghost rounded-lg px-3 py-2 text-xs" title="Set every normal user's limit to the default">Apply to all users</button>
           </div>
@@ -1460,7 +1475,7 @@
         </form>
       </section>
 
-      <section class="mt-10">
+      <section data-panel="users" class="hidden">
         <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 class="text-lg font-semibold">Users <span id="admin-user-count" class="text-sm font-normal text-dim"></span></h2>
           <div class="flex flex-wrap items-center gap-2">
@@ -1491,7 +1506,7 @@
         <p class="mt-2 text-xs text-dim">Click <span class="text-white">Manage</span> to change a user's limits, allowed download types, role or password. Buttons that remove access ask you to click twice.</p>
       </section>
 
-      <section class="mt-10">
+      <section data-panel="downloads" class="hidden">
         <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 class="text-lg font-semibold">All downloads</h2>
           <div class="flex flex-wrap items-center gap-2">
@@ -1505,8 +1520,41 @@
           </thead>
           <tbody id="admin-downloads"><tr><td class="px-4 py-6 text-body" colspan="7">Loading…</td></tr></tbody>
         </table></div>
+      </section>
+      <section data-panel="mine" class="hidden">
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-lg font-semibold">My downloads</h2>
+          <a href="#downloader" class="btn-primary flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold"><i data-lucide="plus" class="h-4 w-4"></i>New download</a>
+        </div>
+        <ul id="admin-mine" class="space-y-3"></ul>
       </section>`;
     icons();
+
+    // ---- tabs
+    const showTab = (tab) => {
+      if (tab === 'approvals') {
+        location.hash = '#approvals';
+        return;
+      }
+      state.adminTab = tab;
+      try {
+        localStorage.setItem('sc_admin_tab', tab);
+      } catch {}
+      $$('[data-atab]').forEach((b) => {
+        const on = b.dataset.atab === tab;
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      $$('[data-panel]').forEach((p) => p.classList.toggle('hidden', p.dataset.panel !== tab));
+      if (tab === 'mine') patchList($('#admin-mine'), state.downloads, { empty: 'dashboard' });
+      icons();
+    };
+    $$('[data-atab]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.atab)));
+    let savedTab = 'overview';
+    try {
+      savedTab = localStorage.getItem('sc_admin_tab') || 'overview';
+    } catch {}
+    showTab(state.adminTab || savedTab);
 
     let users = [];
     let openEditor = null;
@@ -1603,6 +1651,11 @@
           ([ic, l, v]) => `<div class="card rounded-2xl p-4"><p class="flex items-center gap-1.5 text-xs text-body"><i data-lucide="${ic}" class="h-3.5 w-3.5 text-accent-soft"></i>${l}</p><p class="mt-1.5 font-display text-2xl font-semibold">${v}</p></div>`
         )
         .join('');
+      const tp = $('#tab-pending');
+      if (tp) {
+        tp.textContent = s.pendingApprovals || '';
+        tp.classList.toggle('hidden', !s.pendingApprovals);
+      }
       $('#admin-server').textContent = `${srv.database} database · ${srv.maxConcurrentJobs} download slot${srv.maxConcurrentJobs === 1 ? '' : 's'}`;
       const set = st.settings;
       if (document.activeElement !== $('#set-default-limit')) $('#set-default-limit').value = set.defaultMonthlyLimit ?? '';
@@ -1759,6 +1812,7 @@
           flash(msg, `Usage reset for ${u.email}.`);
           await loadAll();
         } else if (btn.matches('[data-u-view]')) {
+          showTab('downloads');
           $('#dl-filter-user').value = u.email;
           drawDownloads();
           $('#admin-downloads').scrollIntoView({ behavior: 'smooth', block: 'center' });

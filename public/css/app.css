@@ -169,3 +169,5 @@ code.inline { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 
 .pring.is-waiting .pring-icon { color: var(--dim); animation-duration: 2.6s; }
 .pring.is-waiting .pring-value { stroke: transparent; }
 .pring-icon svg { position: static; width: 14px; height: 14px; transform: none; }
+.admin-tab.is-on { color: var(--text); border-bottom-color: var(--accent-soft); }
+.admin-tab.is-on svg { color: var(--accent-soft); }
