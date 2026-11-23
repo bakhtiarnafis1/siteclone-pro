@@ -1827,7 +1827,12 @@
               .map((r) => `<li class="flex flex-wrap items-center gap-x-2"><span class="text-white">${esc(r.email)}</span><span class="text-dim">(${esc(r.status)})</span>${r.match.map((m) => `<span class="badge bg-amber-300/10 text-amber-200">${MATCH_LABEL[m]}</span>`).join('')}</li>`)
               .join('')}</ul></div>`
         : '';
+    const notes = {};
     const draw = () => {
+      $$('[data-appr]').forEach((c) => {
+        const inp = c.querySelector('[data-note]');
+        if (inp) notes[c.dataset.appr] = inp.value;
+      });
       const all = users.filter((u) => u.approvalStatus === filter);
       // accounts linked by IP / device are shown together at the top
       const flagged = all.filter((u) => u.related.length);
@@ -1853,6 +1858,10 @@
           (clean.length ? section(groups.length ? 'Other requests' : '', '', render(clean)) : '')
         : '';
       if (!list.length) return drawEmpty();
+      $$('[data-appr]').forEach((c) => {
+        const inp = c.querySelector('[data-note]');
+        if (inp && notes[c.dataset.appr]) inp.value = notes[c.dataset.appr];
+      });
       icons();
     };
     const cardBody = (u) =>
@@ -1923,7 +1932,12 @@
       $('#appr-list').innerHTML = `<p class="text-sm text-rose-300">${esc(err.message)}</p>`;
     }
     clearInterval(state.apprTimer);
-    state.apprTimer = setInterval(() => (state.route === 'approvals' ? load().catch(() => {}) : clearInterval(state.apprTimer)), 10000);
+    state.apprTimer = setInterval(() => {
+      if (state.route !== 'approvals') return clearInterval(state.apprTimer);
+      // don't refresh while the admin is typing a reason
+      if (document.activeElement && document.activeElement.matches('[data-note]')) return;
+      load().catch(() => {});
+    }, 10000);
   }
 
   // --------------------------------------------------------------------------

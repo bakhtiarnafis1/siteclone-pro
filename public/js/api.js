@@ -110,6 +110,11 @@
   async function api(path, { method = 'GET', body, auth = true, redirectOn401 = true, noApprovalRedirect = false } = {}) {
     const headers = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
+    try {
+      headers['X-Device-Id'] = deviceId();
+      const fp = await fpPromise;
+      if (fp) headers['X-Device-Fp'] = fp;
+    } catch {}
     if (auth) {
       const token = await session.token().catch(() => null);
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -170,6 +175,8 @@
       return null;
     }
   }
+
+  const fpPromise = fingerprint().catch(() => null);
 
   window.SC = { deviceId, fingerprint, api, apiUrl, apiBase, session, sb, loginUrl, escapeHtml, formatBytes, friendlyAuthError };
 })();

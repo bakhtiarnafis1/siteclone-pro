@@ -41,6 +41,8 @@ const USER_MAP = {
     signup_device_id: u.signupDeviceId || null,
     signup_fingerprint: u.signupFingerprint || null,
     last_ip: u.lastIp || null,
+    last_device_id: u.lastDeviceId || null,
+    last_fingerprint: u.lastFingerprint || null,
   }),
   fromRow: (r) => ({
     id: r.id,
@@ -65,6 +67,8 @@ const USER_MAP = {
     signupDeviceId: r.signup_device_id || null,
     signupFingerprint: r.signup_fingerprint || null,
     lastIp: r.last_ip || null,
+    lastDeviceId: r.last_device_id || null,
+    lastFingerprint: r.last_fingerprint || null,
   }),
 };
 

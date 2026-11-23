@@ -100,7 +100,7 @@ app.use(
   cors({
     origin: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Device-Fp'],
     maxAge: 86400,
   })
 );
@@ -129,8 +129,10 @@ function relatedAccounts(target) {
     const match = [];
     if (theirIps.some((ip) => ips.has(ip))) match.push('ip');
     else if (theirIps.some((ip) => subnets.has(subnetOf(ip)))) match.push('network');
-    if (target.signupDeviceId && u.signupDeviceId === target.signupDeviceId) match.push('device');
-    if (target.signupFingerprint && u.signupFingerprint === target.signupFingerprint) match.push('browser');
+    const myDevices = [target.signupDeviceId, target.lastDeviceId].filter(Boolean);
+    const myFps = [target.signupFingerprint, target.lastFingerprint].filter(Boolean);
+    if ([u.signupDeviceId, u.lastDeviceId].some((x) => x && myDevices.includes(x))) match.push('device');
+    if ([u.signupFingerprint, u.lastFingerprint].some((x) => x && myFps.includes(x))) match.push('browser');
     if (match.length) out.push({ id: u.id, email: u.email, name: u.name, status: u.approvalStatus || 'approved', match });
   }
   return out;
@@ -231,21 +233,30 @@ app.post('/api/auth/register', async (req, res) => {
   if (String(password).length < 8) return res.status(400).json({ success: false, error: 'Use at least 8 characters for your password.' });
   if (!agree) return res.status(400).json({ success: false, error: 'Please accept the Terms and Privacy Policy.' });
   const normalized = String(email).trim().toLowerCase();
-  if (store.users.find((u) => u.email === normalized)) {
+  const existing = store.users.find((u) => u.email === normalized);
+  if (existing && existing.approvalStatus !== 'rejected') {
     return res.status(409).json({ success: false, error: 'An account with this email already exists. Log in instead.' });
   }
   // one account per IP / device (admins are not counted)
   const ip = ipOf(req);
   const deviceId = String(req.body?.deviceId || '').slice(0, 64) || null;
   const fingerprint = String(req.body?.fingerprint || '').slice(0, 64) || null;
-  const others = store.users.filter((u) => u.role !== 'admin');
+  // the rejected account being replaced doesn't count against its own new request
+  const others = store.users.filter((u) => u.role !== 'admin' && (!existing || u.id !== existing.id));
   if (store.settings.one_account_per_ip !== false && ip !== 'unknown' && others.some((u) => u.signupIp === ip || u.lastIp === ip)) {
     return res.status(409).json({ success: false, code: 'DUPLICATE_NETWORK', error: 'An account has already been created from this network. Only one account per person is allowed — log in to your existing account, or contact support if you share this network with someone.' });
   }
-  if (store.settings.one_account_per_device !== false && deviceId && others.some((u) => u.signupDeviceId === deviceId)) {
+  if (store.settings.one_account_per_device !== false && deviceId && others.some((u) => u.signupDeviceId === deviceId || u.lastDeviceId === deviceId)) {
     return res.status(409).json({ success: false, code: 'DUPLICATE_DEVICE', error: 'An account has already been created on this device. Log in to your existing account instead.' });
   }
   try {
+    // A rejected email applying again: remove the old rejected account, then create a fresh request
+    if (existing) {
+      await sb.auth.admin.deleteUser(existing.id);
+      const idx = store.users.all().indexOf(existing);
+      if (idx !== -1) store.users.all().splice(idx, 1);
+      store.logAdminEvent(null, null, 'user.reapply', { email: normalized });
+    }
     // Created already confirmed (no email step); a database trigger adds the profile row
     const created = await sb.auth.admin.createUser({ email: normalized, password: String(password), name: String(name).trim().slice(0, 80) });
     const user = (await store.users.fetch(created.id)) || null;
@@ -274,12 +285,21 @@ app.post('/api/auth/register', async (req, res) => {
 
 // Approval status (works for pending / rejected accounts too)
 app.get('/api/auth/status', auth.requireAuthAnyStatus, (req, res) => {
+  const dev = String(req.headers['x-device-id'] || '').slice(0, 64);
+  if (dev && req.user.lastDeviceId !== dev) store.users.update(req.user.id, { lastDeviceId: dev });
   res.json({ success: true, status: req.user.approvalStatus || 'approved', note: req.user.reviewNote || '', email: req.user.email, name: req.user.name });
 });
 
 // Called by the browser right after it signs in with Supabase (records the login time)
 app.get('/api/auth/me', auth.requireAuth, (req, res) => {
-  if (req.query.login === '1') store.users.update(req.user.id, { lastLoginAt: new Date().toISOString(), lastIp: ipOf(req) });
+  if (req.query.login === '1') {
+    store.users.update(req.user.id, {
+      lastLoginAt: new Date().toISOString(),
+      lastIp: ipOf(req),
+      lastDeviceId: String(req.headers['x-device-id'] || '').slice(0, 64) || req.user.lastDeviceId || null,
+      lastFingerprint: String(req.headers['x-device-fp'] || '').slice(0, 64) || req.user.lastFingerprint || null,
+    });
+  }
   res.json({ success: true, user: publicUser(req.user), allowance: allowanceFor(req.user) });
 });
 
