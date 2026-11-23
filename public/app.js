@@ -60,6 +60,31 @@ document.querySelectorAll('.js-clone-form').forEach((form) =>
   })
 );
 
+// ---------- Headline: each word rises in turn ----------
+(function splitWords() {
+  const h = document.querySelector('.hero-title');
+  if (!h || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
+  let i = 0;
+  const wrap = (node) => {
+    [...node.childNodes].forEach((n) => {
+      if (n.nodeType === 3) {
+        const frag = document.createDocumentFragment();
+        n.textContent.split(/(\s+)/).forEach((part) => {
+          if (!part) return;
+          if (/^\s+$/.test(part)) return frag.appendChild(document.createTextNode(part));
+          const span = document.createElement('span');
+          span.className = 'w';
+          span.style.setProperty('--w', i++);
+          span.textContent = part;
+          frag.appendChild(span);
+        });
+        n.replaceWith(frag);
+      } else if (n.nodeType === 1 && n.tagName !== 'svg' && n.tagName !== 'SVG') wrap(n);
+    });
+  };
+  wrap(h);
+})();
+
 // ---------- Product preview: fit the 1180px dashboard mock-up to its frame ----------
 function fitStages() {
   document.querySelectorAll('[data-stage]').forEach((vp) => {
@@ -167,7 +192,7 @@ async function refreshServerStatus() {
     const queued = h.queued || 0;
     if (running < slots) {
       text.textContent = 'Server ready';
-      dot.className = 'h-1.5 w-1.5 rounded-full bg-emerald-500';
+      dot.className = 'pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-500';
     } else {
       text.textContent = queued ? `Busy · ${queued} in line` : 'Busy · new downloads wait in line';
       dot.className = 'h-1.5 w-1.5 rounded-full bg-amber-400';

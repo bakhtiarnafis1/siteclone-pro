@@ -1409,7 +1409,7 @@
             )
             .join('')}</div>
         </div>
-        <div class="mt-4"><label class="mb-1.5 block text-xs font-semibold text-body">Admin notes <span class="font-normal text-dim">(only admins see this)</span></label><textarea data-e="notes" rows="2" class="field" style="font-family:Inter,sans-serif">${esc(u.notes || '')}</textarea></div>
+        <div class="mt-4"><label class="mb-1.5 block text-xs font-semibold text-body">Admin notes <span class="font-normal text-dim">(only admins see this)</span></label><textarea data-e="notes" rows="2" class="field" style="font-family:'Instrument Sans',sans-serif">${esc(u.notes || '')}</textarea></div>
         <div class="mt-5 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-4">
           <button data-u-save class="btn-primary rounded-lg px-4 py-2 text-xs font-semibold">Save changes</button>
           <button data-u-reset-usage class="btn-ghost rounded-lg px-3 py-2 text-xs" title="Give back all downloads for this period">Reset usage</button>

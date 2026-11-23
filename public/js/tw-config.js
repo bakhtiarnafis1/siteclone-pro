@@ -4,9 +4,10 @@ tailwind.config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        display: ['Geist', 'Inter', 'system-ui', 'sans-serif'],
-        mono: ['Geist Mono', 'ui-monospace', 'monospace'],
+        sans: ['Instrument Sans', 'system-ui', 'sans-serif'],
+        display: ['Instrument Sans', 'system-ui', 'sans-serif'],
+        serif: ['Instrument Serif', 'Georgia', 'serif'],
+        mono: ['IBM Plex Mono', 'ui-monospace', 'monospace'],
       },
       colors: {
         // dashboard surfaces (graphite)

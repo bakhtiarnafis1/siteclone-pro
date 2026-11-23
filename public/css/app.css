@@ -18,7 +18,7 @@
 }
 html { color-scheme: dark; }
 body { background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
-h1, h2, h3, .font-display { font-family: 'Geist', 'Inter', system-ui, sans-serif; letter-spacing: -0.015em; }
+h1, h2, h3, .font-display { font-family: 'Instrument Sans', system-ui, sans-serif; letter-spacing: -0.015em; }
 ::selection { background: rgba(95, 214, 215, 0.3); }
 
 /* Surfaces */
@@ -66,7 +66,7 @@ h1, h2, h3, .font-display { font-family: 'Geist', 'Inter', system-ui, sans-serif
 .field::placeholder { color: var(--dim); }
 .field:focus { outline: none; border-color: var(--accent-soft); box-shadow: 0 0 0 3px rgba(95, 214, 215, 0.16); }
 .field:disabled { opacity: .55; }
-textarea.field { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.55; }
+textarea.field { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.55; }
 select.field { appearance: none; background-image: linear-gradient(45deg, transparent 50%, #a1a6ad 50%), linear-gradient(135deg, #a1a6ad 50%, transparent 50%); background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 2.2rem; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
@@ -95,7 +95,7 @@ details[open] .chev { transform: rotate(180deg); }
 @keyframes sc-spin { to { transform: rotate(360deg); } }
 .spin { animation: sc-spin 1s linear infinite; }
 
-code.inline { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); border-radius: 6px; padding: 0.05rem 0.35rem; color: var(--text); }
+code.inline { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); border-radius: 6px; padding: 0.05rem 0.35rem; color: var(--text); }
 
 /* ---------------------------------------------------------------- download progress */
 .dl-card { background: var(--surface); border: 1px solid var(--line); transition: border-color .3s ease, box-shadow .3s ease; }
@@ -135,7 +135,7 @@ code.inline { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12p
 
 .stat { background: rgba(255, 255, 255, 0.025); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0; }
 .stat-k { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 5px; }
-.stat-v { margin-top: 2px; font-family: 'Geist', 'Inter', sans-serif; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.stat-v { margin-top: 2px; font-family: 'Instrument Sans', sans-serif; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .stat-v small { font-size: 12px; font-weight: 500; color: var(--dim); }
 
 .live-dot { position: relative; width: 8px; height: 8px; border-radius: 999px; background: var(--accent-soft); }
