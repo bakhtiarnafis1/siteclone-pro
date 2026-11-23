@@ -1446,7 +1446,10 @@
         <form id="admin-settings" class="card grid gap-5 rounded-2xl p-5 md:grid-cols-[1fr_1fr_auto] md:items-end">
           <div><label class="mb-1.5 block text-xs font-semibold text-body" for="set-default-limit">Downloads for new users (per ${state.config.periodDays || 30} days)</label>
             <input id="set-default-limit" type="number" min="0" class="field py-2" placeholder="Unlimited" /></div>
-          <label class="flex items-center gap-3 text-sm md:pb-2"><input id="set-registration" type="checkbox" class="h-4 w-4" /><span>Anyone can create an account<span class="block text-xs text-dim">Untick to allow only accounts you create here.</span></span></label>
+          <div class="space-y-3">
+            <label class="flex items-center gap-3 text-sm"><input id="set-registration" type="checkbox" class="h-4 w-4" /><span>Anyone can create an account<span class="block text-xs text-dim">Untick to allow only accounts you create here.</span></span></label>
+            <label class="flex items-center gap-3 text-sm"><input id="set-approval" type="checkbox" class="h-4 w-4" /><span>New sign-ups need my approval<span class="block text-xs text-dim">They wait on the Approvals page until you approve them.</span></span></label>
+          </div>
           <div class="flex flex-wrap items-center gap-2">
             <button class="btn-primary rounded-lg px-4 py-2 text-xs font-semibold">Save settings</button>
             <button type="button" id="apply-default" class="btn-ghost rounded-lg px-3 py-2 text-xs" title="Set every normal user's limit to the default">Apply to all users</button>
@@ -1603,6 +1606,7 @@
       if (document.activeElement !== $('#set-default-limit')) $('#set-default-limit').value = set.defaultMonthlyLimit ?? '';
       $('#set-registration').checked = set.registrationOpen;
       $('#set-registration').disabled = set.registrationLockedByServer;
+      $('#set-approval').checked = set.requireApproval;
       users = us.users;
       drawUsers();
       drawDownloads();
@@ -1652,7 +1656,7 @@
       e.preventDefault();
       try {
         const v = $('#set-default-limit').value.trim();
-        await api('/api/admin/settings', { method: 'PATCH', body: { defaultMonthlyLimit: v === '' ? null : parseInt(v, 10), registrationOpen: $('#set-registration').checked } });
+        await api('/api/admin/settings', { method: 'PATCH', body: { defaultMonthlyLimit: v === '' ? null : parseInt(v, 10), registrationOpen: $('#set-registration').checked, requireApproval: $('#set-approval').checked } });
         flash($('#settings-msg'), 'Settings saved. New accounts get this limit.');
       } catch (err) {
         flash($('#settings-msg'), err.message, 'bad', 8000);
@@ -1779,6 +1783,111 @@
     });
   }
 
+  // ---------- Approvals (admin) ----------
+  async function refreshPendingBadge() {
+    if (!isAdmin()) return;
+    try {
+      const ov = await api('/api/admin/overview');
+      const n = ov.stats.pendingApprovals || 0;
+      const el = $('#nav-pending');
+      el.textContent = n;
+      el.classList.toggle('hidden', !n);
+    } catch {}
+  }
+
+  async function renderApprovals() {
+    if (!isAdmin()) {
+      location.hash = '#dashboard';
+      return;
+    }
+    view.innerHTML = `
+      ${pageHeader('user-check', 'Sign-up approvals', 'New accounts wait here until you approve them. Check the details, then approve or reject.')}
+      <div class="mb-4 flex flex-wrap items-center gap-2">
+        <div class="inline-flex rounded-xl border border-white/[0.07] bg-ink-900 p-1 text-sm">
+          <button type="button" data-afilter="pending" class="tab is-active rounded-lg px-3 py-1.5">Waiting</button>
+          <button type="button" data-afilter="rejected" class="tab rounded-lg px-3 py-1.5">Rejected</button>
+        </div>
+        <span id="appr-msg" class="inline-msg"></span>
+      </div>
+      <div id="appr-list" class="space-y-3"><div class="card animate-pulse rounded-2xl p-6"><div class="h-3 w-1/2 rounded bg-white/[0.06]"></div></div></div>`;
+    icons();
+    let filter = 'pending';
+    let users = [];
+    const draw = () => {
+      const list = users.filter((u) => u.approvalStatus === filter);
+      $('#appr-list').innerHTML = list.length
+        ? list
+            .map(
+              (u) => `<div class="card rounded-2xl p-5" data-appr="${u.id}">
+                <div class="flex flex-col gap-4 sm:flex-row sm:items-start">
+                  <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent/20 text-base font-semibold text-accent-soft">${esc((u.name || u.email).charAt(0).toUpperCase())}</span>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-[15px] font-semibold">${esc(u.name)}</p>
+                    <p class="text-sm text-accent-soft">${esc(u.email)}</p>
+                    <div class="mt-3 grid gap-x-6 gap-y-1.5 text-xs text-body sm:grid-cols-2">
+                      <p><span class="text-dim">Signed up:</span> ${fmtDate(u.createdAt)}</p>
+                      <p><span class="text-dim">Email domain:</span> ${esc(u.email.split('@')[1] || '')}</p>
+                      <p><span class="text-dim">IP address:</span> ${esc(u.signupIp || '—')}</p>
+                      <p class="truncate" title="${esc(u.signupUserAgent || '')}"><span class="text-dim">Device:</span> ${esc((u.signupUserAgent || '—').slice(0, 70))}</p>
+                    </div>
+                    ${u.approvalStatus === 'rejected' && u.reviewNote ? `<p class="mt-3 text-xs text-rose-300">Reason given: ${esc(u.reviewNote)}</p>` : ''}
+                    ${u.approvalStatus === 'pending' ? `<input data-note type="text" maxlength="300" placeholder="Reason if you reject (optional — the user sees it)" class="field mt-4 py-2 text-xs" />` : ''}
+                  </div>
+                  <div class="flex shrink-0 flex-wrap gap-2 sm:flex-col">
+                    ${
+                      u.approvalStatus === 'pending'
+                        ? `<button data-decide="approved" class="btn-primary flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold"><i data-lucide="check" class="h-4 w-4"></i>Approve</button>
+                           <button data-decide="rejected" class="btn-danger flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold"><i data-lucide="x" class="h-4 w-4"></i>Reject</button>`
+                        : `<button data-decide="approved" class="btn-ghost flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold"><i data-lucide="rotate-ccw" class="h-4 w-4"></i>Approve instead</button>`
+                    }
+                  </div>
+                </div>
+              </div>`
+            )
+            .join('')
+        : `<div class="card rounded-2xl px-6 py-12 text-center"><span class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/[0.04]"><i data-lucide="inbox" class="h-5 w-5 text-dim"></i></span>
+            <p class="mt-4 text-sm font-semibold">${filter === 'pending' ? 'No one is waiting' : 'No rejected sign-ups'}</p>
+            <p class="mt-1 text-sm text-body">${filter === 'pending' ? 'New sign-ups will appear here automatically.' : ''}</p></div>`;
+      icons();
+    };
+    const load = async () => {
+      users = (await api('/api/admin/approvals')).users || [];
+      if (state.route === 'approvals') draw();
+      refreshPendingBadge();
+    };
+    $$('[data-afilter]').forEach((b) =>
+      b.addEventListener('click', () => {
+        filter = b.dataset.afilter;
+        $$('[data-afilter]').forEach((x) => x.classList.toggle('is-active', x === b));
+        draw();
+      })
+    );
+    $('#appr-list').addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-decide]');
+      if (!btn) return;
+      const card = btn.closest('[data-appr]');
+      const u = users.find((x) => x.id === card.dataset.appr);
+      const decision = btn.dataset.decide;
+      if (decision === 'rejected' && !armed(btn, 'Reject?')) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/admin/users/${u.id}/approval`, { method: 'POST', body: { decision, note: card.querySelector('[data-note]')?.value || '' } });
+        flash($('#appr-msg'), decision === 'approved' ? `${u.email} approved — they are signed in automatically.` : `${u.email} rejected.`, decision === 'approved' ? 'ok' : 'bad');
+        await load();
+      } catch (err) {
+        btn.disabled = false;
+        flash($('#appr-msg'), err.message, 'bad', 8000);
+      }
+    });
+    try {
+      await load();
+    } catch (err) {
+      $('#appr-list').innerHTML = `<p class="text-sm text-rose-300">${esc(err.message)}</p>`;
+    }
+    clearInterval(state.apprTimer);
+    state.apprTimer = setInterval(() => (state.route === 'approvals' ? load().catch(() => {}) : clearInterval(state.apprTimer)), 10000);
+  }
+
   // --------------------------------------------------------------------------
   // Router
   // --------------------------------------------------------------------------
@@ -1790,6 +1899,7 @@
     tutorial: renderTutorial,
     settings: () => renderSettings('general'),
     admin: renderAdmin,
+    approvals: renderApprovals,
   };
 
   function route() {
@@ -1821,6 +1931,8 @@
       return;
     }
     route();
+    refreshPendingBadge();
+    if (isAdmin()) setInterval(refreshPendingBadge, 30000);
     try {
       await loadDownloads();
       refreshLists();

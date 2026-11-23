@@ -83,6 +83,12 @@ function createAuth({ store }) {
     if (!user || user.disabled) return null;
     return user;
   }
+  const approvalError = (user) =>
+    user.approvalStatus === 'pending'
+      ? { status: 403, body: { success: false, code: 'ACCOUNT_PENDING', error: 'Your account is waiting for approval.' } }
+      : user.approvalStatus === 'rejected'
+      ? { status: 403, body: { success: false, code: 'ACCOUNT_REJECTED', error: 'Your sign-up request was not approved.', note: user.reviewNote || '' } }
+      : null;
   const forgetUserTokens = (uid) => {
     for (const [k, v] of tokenCache) if (v.uid === uid) tokenCache.delete(k);
   };
@@ -97,6 +103,8 @@ function createAuth({ store }) {
     userFromAccessToken(bearerFrom(req))
       .then((user) => {
         if (!user) return res.status(401).json({ success: false, error: 'Please log in to continue.', code: 'AUTH_REQUIRED' });
+        const blocked = !req.allowUnapproved && approvalError(user);
+        if (blocked) return res.status(blocked.status).json(blocked.body);
         req.user = user;
         req.accessToken = bearerFrom(req);
         next();
@@ -131,7 +139,13 @@ function createAuth({ store }) {
     if (admin) console.log(`[auth] Admin account ready: ${email}`);
   }
 
-  return { fileTokenFor, userFromFileToken, userFromAccessToken, forgetUserTokens, requireAuth, requireAdmin, ensureSeedAdmin };
+  // Like requireAuth, but also lets pending / rejected accounts through (status page)
+  function requireAuthAnyStatus(req, res, next) {
+    req.allowUnapproved = true;
+    requireAuth(req, res, next);
+  }
+
+  return { requireAuthAnyStatus, fileTokenFor, userFromFileToken, userFromAccessToken, forgetUserTokens, requireAuth, requireAdmin, ensureSeedAdmin };
 }
 
 function defaultMonthlyLimit() {

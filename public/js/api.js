@@ -107,7 +107,7 @@
   }
 
   // fetch wrapper: JSON in/out, adds the access token, sends signed-out users to the login page
-  async function api(path, { method = 'GET', body, auth = true, redirectOn401 = true } = {}) {
+  async function api(path, { method = 'GET', body, auth = true, redirectOn401 = true, noApprovalRedirect = false } = {}) {
     const headers = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (auth) {
@@ -127,6 +127,10 @@
       await session.signOut();
       location.href = loginUrl();
       throw new Error('Please log in again.');
+    }
+    if (res.status === 403 && (data.code === 'ACCOUNT_PENDING' || data.code === 'ACCOUNT_REJECTED') && !noApprovalRedirect) {
+      location.href = '/pending';
+      throw new Error(data.error || 'Waiting for approval.');
     }
     if (!res.ok || data.success === false) {
       const err = new Error(data.error || `Request failed (${res.status}).`);

@@ -215,8 +215,18 @@ app.post('/api/auth/register', async (req, res) => {
     // Created already confirmed (no email step); a database trigger adds the profile row
     const created = await sb.auth.admin.createUser({ email: normalized, password: String(password), name: String(name).trim().slice(0, 80) });
     const user = (await store.users.fetch(created.id)) || null;
-    if (user && user.monthlyLimit !== defaultMonthlyLimit()) store.users.update(user.id, { monthlyLimit: defaultMonthlyLimit() });
-    res.json({ success: true });
+    const needsApproval = store.settings.require_approval !== false;
+    if (user) {
+      store.users.update(user.id, {
+        monthlyLimit: defaultMonthlyLimit(),
+        approvalStatus: needsApproval ? 'pending' : 'approved',
+        reviewedAt: needsApproval ? null : new Date().toISOString(),
+        signupIp: ipOf(req),
+        signupUserAgent: String(req.headers['user-agent'] || '').slice(0, 300),
+      });
+      await store.flushAll();
+    }
+    res.json({ success: true, pending: needsApproval });
   } catch (err) {
     if (err.status === 422 || /already/i.test(err.message)) {
       return res.status(409).json({ success: false, error: 'An account with this email already exists. Log in instead.' });
@@ -224,6 +234,11 @@ app.post('/api/auth/register', async (req, res) => {
     console.error('[register]', err.message);
     res.status(400).json({ success: false, error: err.message || 'Could not create the account.' });
   }
+});
+
+// Approval status (works for pending / rejected accounts too)
+app.get('/api/auth/status', auth.requireAuthAnyStatus, (req, res) => {
+  res.json({ success: true, status: req.user.approvalStatus || 'approved', note: req.user.reviewNote || '', email: req.user.email, name: req.user.name });
 });
 
 // Called by the browser right after it signs in with Supabase (records the login time)
@@ -942,6 +957,7 @@ app.get('/api/admin/overview', auth.requireAdmin, (req, res) => {
       failed: all.filter((d) => d.status === 'failed').length,
       active: all.filter(isActive).length,
       library: store.library.all().length,
+      pendingApprovals: store.users.filter((u) => u.approvalStatus === 'pending').length,
       last24h: all.filter((d) => new Date(d.created_at).getTime() > dayAgo).length,
       pagesSaved: all.reduce((n, d) => n + (d.status === 'completed' ? d.pages || 0 : 0), 0),
     },
@@ -959,6 +975,11 @@ function adminUserView(u) {
     allowedModes: u.allowedModes || null,
     maxActiveJobs: u.maxActiveJobs ?? null,
     notes: u.notes || '',
+    approvalStatus: u.approvalStatus || 'approved',
+    reviewedAt: u.reviewedAt || null,
+    reviewNote: u.reviewNote || '',
+    signupIp: u.signupIp || null,
+    signupUserAgent: u.signupUserAgent || null,
     downloads: store.downloads.filter((d) => d.user_id === u.id).length,
     activeDownloads: store.downloads.filter((d) => d.user_id === u.id && isActive(d)).length,
     pagesSaved: store.downloads.all().reduce((n, d) => n + (d.user_id === u.id && d.status === 'completed' ? d.pages || 0 : 0), 0),
@@ -981,7 +1002,7 @@ app.post('/api/admin/users', auth.requireAdmin, async (req, res) => {
     const user = await store.users.fetch(created.id);
     const role = b.role === 'admin' ? 'admin' : 'user';
     const limit = b.monthlyLimit === null || b.monthlyLimit === '' || b.monthlyLimit === undefined ? defaultMonthlyLimit() : Math.max(0, parseInt(b.monthlyLimit, 10) || 0);
-    store.users.update(user.id, { role, monthlyLimit: role === 'admin' ? null : limit, planName: String(b.planName || 'Free').slice(0, 40) });
+    store.users.update(user.id, { role, monthlyLimit: role === 'admin' ? null : limit, planName: String(b.planName || 'Free').slice(0, 40), approvalStatus: 'approved', reviewedAt: new Date().toISOString() });
     store.logAdminEvent(req.user.id, user.id, 'user.create', { email, role });
     res.json({ success: true, user: adminUserView(user), password, generated: !b.password });
   } catch (err) {
@@ -998,6 +1019,7 @@ app.get('/api/admin/settings', auth.requireAdmin, (req, res) => {
       defaultMonthlyLimit: defaultMonthlyLimit(),
       registrationOpen: registrationOpen(),
       registrationLockedByServer: process.env.ALLOW_REGISTRATION === 'false',
+      requireApproval: store.settings.require_approval !== false,
       maxPages: MAX_PAGES_LIMIT,
       maxJobsPerUser: MAX_JOBS_PER_USER,
       maxConcurrentJobs: MAX_CONCURRENT_JOBS,
@@ -1013,6 +1035,7 @@ app.patch('/api/admin/settings', auth.requireAdmin, async (req, res) => {
       await store.saveSetting('default_monthly_limit', v);
     }
     if ('registrationOpen' in b) await store.saveSetting('registration_open', Boolean(b.registrationOpen));
+    if ('requireApproval' in b) await store.saveSetting('require_approval', Boolean(b.requireApproval));
     if (b.applyDefaultToAll) {
       // give every normal user the default limit (admins stay unlimited)
       for (const u of store.users.all()) if (u.role !== 'admin') store.users.update(u.id, { monthlyLimit: defaultMonthlyLimit() });
@@ -1079,6 +1102,28 @@ app.patch('/api/admin/users/:id', auth.requireAdmin, async (req, res) => {
   }
   const updated = store.users.update(user.id, patch);
   store.logAdminEvent(req.user.id, user.id, 'user.update', patch);
+  res.json({ success: true, user: adminUserView(updated) });
+});
+
+// Sign-up approvals
+app.get('/api/admin/approvals', auth.requireAdmin, async (req, res) => {
+  try {
+    await store.users.reload();
+  } catch {}
+  const list = store.users.filter((u) => u.approvalStatus === 'pending' || u.approvalStatus === 'rejected').map(adminUserView);
+  res.json({ success: true, users: list });
+});
+app.post('/api/admin/users/:id/approval', auth.requireAdmin, (req, res) => {
+  const user = store.users.find((u) => u.id === req.params.id);
+  if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
+  const decision = req.body?.decision;
+  if (!['approved', 'rejected', 'pending'].includes(decision)) return res.status(400).json({ success: false, error: 'Choose approve or reject.' });
+  const updated = store.users.update(user.id, {
+    approvalStatus: decision,
+    reviewedAt: new Date().toISOString(),
+    reviewNote: decision === 'rejected' ? String(req.body?.note || '').slice(0, 300) : '',
+  });
+  store.logAdminEvent(req.user.id, user.id, `user.${decision}`, { note: req.body?.note || '' });
   res.json({ success: true, user: adminUserView(updated) });
 });
 

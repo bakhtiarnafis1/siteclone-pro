@@ -33,6 +33,11 @@ const USER_MAP = {
     allowed_modes: Array.isArray(u.allowedModes) && u.allowedModes.length ? u.allowedModes : null,
     max_active_jobs: u.maxActiveJobs ?? null,
     notes: u.notes || null,
+    approval_status: u.approvalStatus || 'approved',
+    reviewed_at: u.reviewedAt || null,
+    review_note: u.reviewNote || null,
+    signup_ip: u.signupIp || null,
+    signup_user_agent: u.signupUserAgent || null,
   }),
   fromRow: (r) => ({
     id: r.id,
@@ -49,6 +54,11 @@ const USER_MAP = {
     allowedModes: r.allowed_modes || null,
     maxActiveJobs: r.max_active_jobs ?? null,
     notes: r.notes || '',
+    approvalStatus: r.approval_status || 'approved',
+    reviewedAt: r.reviewed_at || null,
+    reviewNote: r.review_note || '',
+    signupIp: r.signup_ip || null,
+    signupUserAgent: r.signup_user_agent || null,
   }),
 };
 
@@ -234,7 +244,7 @@ function createStore() {
   };
 
   // ---- site-wide settings (app_settings table)
-  const settings = { default_monthly_limit: 10, registration_open: true };
+  const settings = { default_monthly_limit: 10, registration_open: true, require_approval: true };
   async function loadSettings() {
     const rows = await db.select('app_settings', 'select=key,value');
     for (const r of rows) settings[r.key] = r.value;

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%2301a3a4%27/%3E%3Cpath d=%27M16 8v11m0 0-4.5-4.5M16 19l4.5-4.5M10 23h12%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.4%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E" />
+  <title>Waiting for approval — SiteClone</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/js/tw-config.js"></script>
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/site.css" />
+  <style>
+    .orbit { position: relative; width: 84px; height: 84px; }
+    .orbit::before { content: ''; position: absolute; inset: 0; border-radius: 999px; border: 3px solid rgba(1,163,164,.15); border-top-color: #01a3a4; animation: spin 1.4s linear infinite; }
+    .orbit::after { content: ''; position: absolute; inset: 14px; border-radius: 999px; background: #e8f8f8; animation: breathe 2.4s ease-in-out infinite; }
+    .orbit i, .orbit svg { position: absolute; inset: 0; margin: auto; z-index: 1; color: #018a8b; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes breathe { 0%, 100% { transform: scale(.92); } 50% { transform: scale(1); } }
+    .fade-in { animation: rise-in .6s cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes rise-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .orbit::before, .orbit::after, .fade-in { animation: none; } }
+  </style>
+</head>
+<body class="min-h-screen font-sans">
+  <div class="hero-bg fixed inset-0 -z-10"></div>
+  <header class="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
+    <a href="/" class="flex items-center gap-2.5">
+      <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600"><i data-lucide="arrow-down-to-line" class="h-4 w-4 text-white"></i></span>
+      <span class="font-display text-[15px] font-semibold tracking-tight">SiteClone</span>
+    </a>
+    <button id="logout" class="text-sm font-medium text-slate-600 hover:text-slate-950">Log out</button>
+  </header>
+
+  <main class="mx-auto flex max-w-[460px] flex-col items-center px-5 pb-20 pt-16 text-center">
+    <!-- waiting -->
+    <section id="state-pending" class="fade-in flex flex-col items-center">
+      <div class="orbit"><i data-lucide="hourglass" class="h-7 w-7"></i></div>
+      <h1 class="mt-8 text-3xl font-semibold">Your account is waiting for approval</h1>
+      <p class="mt-3 text-[15px] leading-relaxed text-slate-600">Thanks for signing up<span id="who"></span>. An admin checks every new account to keep SiteClone safe. This usually takes a few minutes.</p>
+      <div class="s-card mt-8 w-full p-5 text-left">
+        <p class="flex items-center gap-2 text-sm font-semibold text-slate-800"><span class="pulse-dot inline-block h-2 w-2 rounded-full bg-amber-400"></span>Waiting for an admin</p>
+        <p class="mt-1.5 text-sm text-slate-500">Keep this page open — you'll be signed in automatically as soon as your account is approved.</p>
+        <p class="mt-3 text-xs text-slate-400">Last checked <span id="checked">just now</span></p>
+      </div>
+    </section>
+
+    <!-- approved -->
+    <section id="state-approved" class="fade-in hidden flex-col items-center">
+      <span class="flex h-20 w-20 items-center justify-center rounded-full bg-brand-50"><i data-lucide="check" class="h-9 w-9 text-brand-700"></i></span>
+      <h1 class="mt-8 text-3xl font-semibold">You're approved</h1>
+      <p class="mt-3 text-[15px] text-slate-600">Signing you in…</p>
+    </section>
+
+    <!-- rejected -->
+    <section id="state-rejected" class="fade-in hidden flex-col items-center">
+      <span class="flex h-20 w-20 items-center justify-center rounded-full bg-rose-50"><i data-lucide="x" class="h-9 w-9 text-rose-600"></i></span>
+      <h1 class="mt-8 text-3xl font-semibold">Sign-up not approved</h1>
+      <p class="mt-3 text-[15px] leading-relaxed text-slate-600">An admin reviewed your request and did not approve this account.</p>
+      <p id="reason" class="mt-4 hidden w-full rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-left text-sm text-rose-700"></p>
+      <a href="/" class="s-btn s-btn-primary mt-8 h-11 px-6 text-sm">Back to home</a>
+    </section>
+  </main>
+
+  <script src="/config.js"></script>
+  <script src="/js/api.js"></script>
+  <script>
+    lucide.createIcons();
+    if (!SC.session.isLoggedIn()) location.replace('/login');
+    const show = (name) => ['pending', 'approved', 'rejected'].forEach((s) => {
+      const el = document.getElementById('state-' + s);
+      el.classList.toggle('hidden', s !== name);
+      el.classList.toggle('flex', s === name);
+    });
+    document.getElementById('logout').onclick = async () => { await SC.session.signOut(); location.href = '/'; };
+
+    let timer = null;
+    async function check() {
+      try {
+        const data = await SC.api('/api/auth/status', { noApprovalRedirect: true });
+        document.getElementById('checked').textContent = new Date().toLocaleTimeString();
+        if (data.name) document.getElementById('who').textContent = `, ${data.name.split(' ')[0]}`;
+        if (data.status === 'approved') {
+          clearInterval(timer);
+          show('approved');
+          const me = await SC.api('/api/auth/me?login=1');
+          SC.session.saveUser(me.user);
+          setTimeout(() => location.replace('/app'), 1200);
+        } else if (data.status === 'rejected') {
+          clearInterval(timer);
+          show('rejected');
+          if (data.note) {
+            const r = document.getElementById('reason');
+            r.textContent = 'Reason: ' + data.note;
+            r.classList.remove('hidden');
+          }
+          await SC.session.signOut();
+        } else {
+          show('pending');
+        }
+      } catch (err) {
+        document.getElementById('checked').textContent = 'retrying…';
+      }
+    }
+    check();
+    timer = setInterval(check, 5000);
+  </script>
+</body>
+</html>

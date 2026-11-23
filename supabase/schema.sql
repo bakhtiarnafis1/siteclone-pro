@@ -174,3 +174,12 @@ insert into public.app_settings (key, value) values
   ('default_monthly_limit', '10'::jsonb),
   ('registration_open', 'true'::jsonb)
 on conflict (key) do nothing;
+
+
+-- ---------------------------------------------------------------- admin approval of new sign-ups
+alter table public.profiles add column if not exists approval_status text not null default 'pending' check (approval_status in ('pending', 'approved', 'rejected'));
+alter table public.profiles add column if not exists reviewed_at timestamptz;
+alter table public.profiles add column if not exists review_note text;
+alter table public.profiles add column if not exists signup_ip text;
+alter table public.profiles add column if not exists signup_user_agent text;
+insert into public.app_settings (key, value) values ('require_approval', 'true'::jsonb) on conflict (key) do nothing;
