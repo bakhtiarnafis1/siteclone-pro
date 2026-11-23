@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%232f5bff%27/%3E%3Crect x=%279%27 y=%2711%27 width=%2711%27 height=%2712%27 rx=%272%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.2%27/%3E%3Cpath d=%27M13 9h8a2 2 0 0 1 2 2v9%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.2%27/%3E%3C/svg%3E" />
+  <title>Dashboard — SiteClone</title>
+  <script>
+    // Signed-out visitors go straight to the login page (before anything renders)
+    try {
+      if (!localStorage.getItem('sc_token')) {
+        location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search + location.hash));
+      }
+    } catch (e) {}
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/js/tw-config.js"></script>
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body class="min-h-screen font-sans text-white">
+  <div class="flex min-h-screen">
+
+    <!-- ============ SIDEBAR ============ -->
+    <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 flex w-64 -translate-x-full flex-col border-r border-white/[0.06] bg-ink-950 transition-transform duration-200 lg:translate-x-0">
+      <a href="/" class="flex h-16 items-center gap-2.5 border-b border-white/[0.06] px-5">
+        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent shadow-[0_0_18px_rgba(47,91,255,0.55)]">
+          <i data-lucide="copy" class="h-4 w-4 text-white"></i>
+        </span>
+        <span class="text-sm font-semibold tracking-tight">SiteClone</span>
+      </a>
+
+      <nav class="flex-1 space-y-5 overflow-y-auto px-3 py-5 text-sm">
+        <div>
+          <p class="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-dim">Overview</p>
+          <a href="#dashboard" data-route="dashboard" class="nav-link flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="layout-dashboard" class="h-4 w-4"></i>Dashboard</a>
+        </div>
+        <div>
+          <p class="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-dim">Create</p>
+          <a href="#downloader" data-route="downloader" class="nav-link flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="cloud-download" class="h-4 w-4"></i>Website Downloader</a>
+          <a href="#library" data-route="library" class="nav-link mt-1 flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="library" class="h-4 w-4"></i>Website Library</a>
+        </div>
+        <div>
+          <p class="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-dim">Manage</p>
+          <a href="#history" data-route="history" class="nav-link flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="history" class="h-4 w-4"></i>History</a>
+        </div>
+        <div>
+          <p class="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-dim">Support</p>
+          <a href="#tutorial" data-route="tutorial" class="nav-link flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="graduation-cap" class="h-4 w-4"></i>Tutorial</a>
+          <a href="#settings" data-route="settings" class="nav-link mt-1 flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="settings" class="h-4 w-4"></i>Settings</a>
+        </div>
+        <div id="nav-admin" class="hidden">
+          <p class="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-dim">Admin</p>
+          <a href="#admin" data-route="admin" class="nav-link flex items-center gap-2.5 rounded-lg px-3 py-2"><i data-lucide="shield-check" class="h-4 w-4"></i>Admin panel</a>
+        </div>
+      </nav>
+
+      <div class="space-y-3 border-t border-white/[0.06] p-3">
+        <a href="#settings" class="card block rounded-xl p-3">
+          <p class="text-[11px] text-dim">Downloads left</p>
+          <p class="mt-0.5 flex items-center gap-1.5 font-mono text-sm"><i data-lucide="coins" class="h-3.5 w-3.5 text-accent-soft"></i><span id="credits-text">—</span></p>
+          <p id="credits-plan" class="mt-0.5 text-[11px] text-dim"></p>
+        </a>
+        <div class="relative">
+          <button id="user-menu-btn" type="button" class="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-white/[0.04]">
+            <span id="user-avatar" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent/20 text-sm font-semibold text-accent-soft">?</span>
+            <span class="min-w-0 flex-1">
+              <span id="user-name" class="block truncate text-sm font-medium">…</span>
+              <span id="user-email" class="block truncate text-xs text-dim"></span>
+            </span>
+            <i data-lucide="chevrons-up-down" class="h-4 w-4 text-dim"></i>
+          </button>
+          <div id="user-menu" class="absolute bottom-full left-0 right-0 mb-2 hidden rounded-xl border border-white/10 bg-ink-900 p-1 shadow-2xl">
+            <a href="#settings" class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-body hover:bg-white/[0.05] hover:text-white"><i data-lucide="user" class="h-4 w-4"></i>Account settings</a>
+            <a href="/" class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-body hover:bg-white/[0.05] hover:text-white"><i data-lucide="home" class="h-4 w-4"></i>Home page</a>
+            <button id="logout-btn" type="button" class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-rose-300 hover:bg-rose-500/10"><i data-lucide="log-out" class="h-4 w-4"></i>Log out</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+    <div id="sidebar-backdrop" class="fixed inset-0 z-30 hidden bg-black/60 lg:hidden"></div>
+
+    <!-- ============ MAIN ============ -->
+    <div class="flex min-w-0 flex-1 flex-col lg:pl-64">
+      <header class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-white/[0.06] bg-ink-950/80 px-4 backdrop-blur-md lg:hidden">
+        <button id="menu-btn" type="button" class="btn-ghost flex h-9 w-9 items-center justify-center rounded-lg" aria-label="Open menu"><i data-lucide="menu" class="h-4 w-4"></i></button>
+        <span class="text-sm font-semibold">SiteClone</span>
+      </header>
+
+      <main id="view" class="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-8 sm:py-10">
+        <div class="flex items-center gap-3 text-sm text-body"><i data-lucide="loader-2" class="spin h-4 w-4"></i>Loading your account…</div>
+      </main>
+    </div>
+  </div>
+
+  <div id="toasts" class="pointer-events-none fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+  <script src="/config.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

@@ -17,3 +17,6 @@ ORACLE-SETUP.md
 *.key
 *.pem
 HOSTING-SETUP-GUIDE.md
+storage/db
+storage/library
+Reference

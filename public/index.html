@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%232f5bff%27/%3E%3Crect x=%279%27 y=%2711%27 width=%2711%27 height=%2712%27 rx=%272%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.2%27/%3E%3Cpath d=%27M13 9h8a2 2 0 0 1 2 2v9%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.2%27/%3E%3C/svg%3E" />
   <title>SiteClone — Download any website as clean, offline-ready code</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -117,14 +118,11 @@
       <nav class="hidden items-center gap-8 md:flex">
         <a href="#how" class="text-sm text-body hover:text-white transition-colors">How it works</a>
         <a href="#features" class="text-sm text-body hover:text-white transition-colors">Features</a>
-        <a href="#history-section" class="flex items-center gap-1.5 text-sm text-body hover:text-white transition-colors">
-          My downloads
-          <span id="nav-history-badge" class="rounded-full bg-accent/20 px-1.5 font-mono text-[10px] text-accent-soft">0</span>
-        </a>
+        <a href="/app" class="js-dash-link text-sm text-body hover:text-white transition-colors">Dashboard</a>
         <a href="#faq" class="text-sm text-body hover:text-white transition-colors">FAQ</a>
       </nav>
 
-      <a href="#clone" class="btn-primary rounded-lg px-4 py-2 text-sm font-medium">Start cloning</a>
+      <div class="flex items-center gap-2"><a id="nav-login" href="/login" class="btn-ghost rounded-lg px-3.5 py-2 text-sm font-medium">Log in</a><a id="nav-cta" href="/register" class="btn-primary rounded-lg px-4 py-2 text-sm font-medium">Sign up free</a></div>
     </div>
   </header>
 
@@ -154,16 +152,17 @@
 
           <!-- Mode tabs -->
           <div class="grid grid-cols-3 gap-1 rounded-xl bg-ink-950/70 p-1 border border-white/[0.06]">
-            <button type="button" data-mode="single" class="mode-tab is-active flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
+            <button type="button" data-mode="single_page" class="mode-tab is-active flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
               <i data-lucide="file" class="h-4 w-4"></i> Single page
             </button>
-            <button type="button" data-mode="full" class="mode-tab flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
+            <button type="button" data-mode="full_website" class="mode-tab flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
               <i data-lucide="files" class="h-4 w-4"></i> Full website
             </button>
-            <button type="button" data-mode="auth" class="mode-tab flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
-              <i data-lucide="lock" class="h-4 w-4"></i> Behind login
+            <button type="button" data-mode="cookie_export" class="mode-tab flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium sm:text-sm">
+              <i data-lucide="lock" class="h-4 w-4"></i> Backend UI
             </button>
           </div>
+          <p id="mode-hint" class="-mt-2 text-center text-xs text-dim">Just the page you enter — its links are not followed.</p>
 
           <!-- URL + button -->
           <div class="flex flex-col gap-2.5 sm:flex-row">
@@ -171,64 +170,23 @@
               <i data-lucide="globe" class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-dim"></i>
               <input
                 id="target-url"
-                type="url"
-                required
+                type="text"
+                inputmode="url"
+                autocomplete="off"
                 placeholder="https://example.com"
                 class="h-12 w-full rounded-xl border border-white/10 bg-ink-950 pl-10 pr-4 text-sm text-white placeholder:text-dim focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 transition"
               />
             </div>
             <button id="submit-clone-btn" type="submit" class="btn-primary flex h-12 items-center justify-center gap-2 rounded-xl px-6 text-sm font-semibold">
               <i data-lucide="download" class="h-4 w-4"></i>
-              <span id="submit-btn-text">Clone site</span>
+              <span id="submit-btn-text">Download</span>
             </button>
           </div>
 
-          <!-- Page limit (full / auth only) -->
-          <div id="page-limit-panel" class="hidden">
-            <div class="mb-2 flex items-center justify-between text-sm">
-              <label for="page-limit-slider" class="text-body">How many pages?</label>
-              <span class="font-mono text-white"><span id="page-limit-value">10</span> <span class="text-dim">/ <span class="js-max-pages">100</span></span></span>
-            </div>
-            <input id="page-limit-slider" type="range" min="1" max="100" value="10" class="w-full cursor-pointer" />
-          </div>
-
-          <!-- Cookies (auth only) -->
-          <div id="cookie-auth-panel" class="hidden">
-            <label for="cookie-json-input" class="mb-2 flex items-center justify-between text-sm">
-              <span class="text-body">Session cookies (JSON)</span>
-              <a href="#faq-login" class="text-xs text-accent-soft hover:underline">How do I get these?</a>
-            </label>
-            <textarea
-              id="cookie-json-input"
-              rows="3"
-              placeholder='[{"name":"session","value":"...","domain":".example.com","path":"/"}]'
-              class="w-full rounded-xl border border-white/10 bg-ink-950 p-3 font-mono text-xs text-white placeholder:text-dim focus:border-accent focus:outline-none"
-            ></textarea>
-            <p class="mt-1.5 text-xs text-dim">Used only for this download, then deleted.</p>
-          </div>
-
-          <!-- Advanced (collapsed by default) -->
-          <details class="group rounded-xl border border-white/[0.06] bg-ink-950/40">
-            <summary class="flex cursor-pointer items-center justify-between px-4 py-3 text-sm text-body hover:text-white">
-              <span class="flex items-center gap-2"><i data-lucide="settings-2" class="h-4 w-4"></i> Advanced settings</span>
-              <i data-lucide="chevron-down" class="h-4 w-4 transition-transform group-open:rotate-180"></i>
-            </summary>
-            <div class="space-y-4 border-t border-white/[0.06] px-4 py-4">
-              <div class="flex items-center justify-between">
-                <span class="text-sm text-body">Screen size</span>
-                <div class="inline-flex rounded-lg border border-white/10 bg-ink-950 p-0.5 text-xs">
-                  <button type="button" data-viewport="desktop" class="viewport-btn rounded-md bg-accent px-3 py-1 font-medium text-white">Desktop</button>
-                  <button type="button" data-viewport="mobile" class="viewport-btn rounded-md px-3 py-1 font-medium text-body hover:text-white">Mobile</button>
-                </div>
-              </div>
-              <div class="grid gap-2.5 sm:grid-cols-2">
-                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-autoscroll" type="checkbox" checked class="h-4 w-4" /> Scroll to load lazy images</label>
-                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-rewrite-links" type="checkbox" checked class="h-4 w-4" /> Make links work offline</label>
-                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-save-assets" type="checkbox" checked class="h-4 w-4" /> Include fonts &amp; images</label>
-                <label class="flex items-center gap-2 text-sm text-body"><input id="opt-same-domain" type="checkbox" checked class="h-4 w-4" /> Stay on the same domain</label>
-              </div>
-            </div>
-          </details>
+          <p id="auth-note" class="flex items-center justify-center gap-2 text-xs text-body">
+            <i data-lucide="user-check" class="h-3.5 w-3.5 text-accent-soft"></i>
+            <span id="auth-note-text">Log in or create a free account to start downloading.</span>
+          </p>
 
           <!-- Live server status -->
           <p id="server-status" class="flex items-center justify-center gap-2 text-xs text-dim" aria-live="polite">
@@ -236,40 +194,6 @@
             <span id="server-status-text">Checking server…</span>
           </p>
         </form>
-
-        <!-- Progress (hidden until a job starts) -->
-        <div id="live-progress-panel" class="hidden mt-5 border-t border-white/[0.06] pt-5">
-          <div class="mb-3 flex items-center justify-between gap-4">
-            <div class="min-w-0">
-              <p id="progress-status-title" class="truncate text-sm font-medium text-white">Starting…</p>
-              <p id="progress-status-subtitle" class="truncate font-mono text-xs text-dim"></p>
-            </div>
-            <span id="stat-percent" class="font-mono text-sm text-mint">0%</span>
-          </div>
-          <div class="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
-            <div id="progress-bar-fill" class="h-full rounded-full bg-gradient-to-r from-accent to-accent-soft transition-all duration-300" style="width:0%"></div>
-          </div>
-          <div class="mt-3 flex gap-5 font-mono text-xs text-dim">
-            <span>Pages <strong id="stat-pages" class="font-medium text-white">0 / 1</strong></span>
-            <span>Files <strong id="stat-assets" class="font-medium text-white">0</strong></span>
-          </div>
-
-          <details class="mt-3">
-            <summary class="cursor-pointer text-xs text-dim hover:text-body">Show log</summary>
-            <div id="progress-log-box" class="mt-2 max-h-36 space-y-1 overflow-y-auto rounded-lg bg-ink-950 p-3 font-mono text-[11px] text-body"></div>
-          </details>
-
-          <div id="clone-complete-actions" class="hidden mt-4 flex flex-col items-center justify-between gap-3 rounded-xl border border-mint/25 bg-mint/[0.06] p-4 sm:flex-row">
-            <div class="flex items-center gap-2.5 text-sm text-white">
-              <i data-lucide="check-circle-2" class="h-5 w-5 text-mint"></i>
-              <span id="complete-summary-text">Your ZIP is ready.</span>
-            </div>
-            <div class="flex gap-2">
-              <button id="btn-live-preview" type="button" class="btn-ghost rounded-lg px-3.5 py-2 text-sm">Preview</button>
-              <a id="btn-download-zip" href="#" download class="btn-primary rounded-lg px-4 py-2 text-sm font-semibold">Download ZIP</a>
-            </div>
-          </div>
-        </div>
       </div>
 
       <p class="mt-5 text-center text-xs text-dim">
@@ -385,17 +309,11 @@
 
     <!-- ============ MY DOWNLOADS ============ -->
     <section id="history-section" class="px-5 py-24 border-t border-white/[0.05]">
-      <div class="mx-auto max-w-3xl">
-        <div class="mb-8 flex items-end justify-between gap-4">
-          <div>
-            <h2 class="text-2xl font-semibold tracking-tight">My downloads</h2>
-            <p class="mt-1 text-sm text-body">Sites you've cloned, saved on this computer.</p>
-          </div>
-          <button id="refresh-history-btn" type="button" class="btn-ghost flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs text-body hover:text-white">
-            <i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i> Refresh
-          </button>
-        </div>
-        <div id="history-list-container" class="space-y-3"></div>
+      <div class="card mx-auto flex max-w-3xl flex-col items-center gap-4 rounded-2xl px-6 py-10 text-center">
+        <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15"><i data-lucide="layout-dashboard" class="h-5 w-5 text-accent-soft"></i></span>
+        <h2 class="text-2xl font-semibold tracking-tight">Your downloads live in your dashboard</h2>
+        <p class="max-w-xl text-sm text-body">Every ZIP you make is saved to your History, with live progress, “Stop &amp; download”, a Website Library of ready-made downloads, and your plan’s remaining downloads.</p>
+        <a href="/app" class="js-dash-link btn-primary rounded-lg px-5 py-2.5 text-sm font-semibold">Open dashboard</a>
       </div>
     </section>
 
@@ -418,12 +336,19 @@
             </summary>
             <p class="mt-3 text-sm leading-relaxed text-body">Yes. Pages are opened in a real Chromium browser and captured after the JavaScript has finished rendering.</p>
           </details>
+        <details class="group card rounded-xl px-5 py-4">
+          <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
+            Do I need an account?
+            <i data-lucide="plus" class="h-4 w-4 text-body transition-transform group-open:rotate-45"></i>
+          </summary>
+          <p class="mt-3 text-sm leading-relaxed text-body">Yes — a free account. Your downloads, ZIP files and remaining monthly downloads are kept in your dashboard. A download that fails is not counted.</p>
+        </details>
           <details id="faq-login" class="group card rounded-xl px-5 py-4">
             <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
               How do I capture pages behind a login?
               <i data-lucide="plus" class="h-4 w-4 text-body transition-transform group-open:rotate-45"></i>
             </summary>
-            <p class="mt-3 text-sm leading-relaxed text-body">Log in to the site in your own browser, export its cookies as JSON with the free Cookie-Editor extension, and paste them into the "Behind login" tab. Only do this for accounts you own or are allowed to use.</p>
+            <p class="mt-3 text-sm leading-relaxed text-body">Log in to the site in your own browser, export its cookies as JSON with the free Cookie-Editor extension, and paste them into the "Backend HTML UI" option in your dashboard. If the site keeps the login in local storage, the form shows a one-line command to copy that too. Only do this for accounts you own or are allowed to use.</p>
           </details>
           <details class="group card rounded-xl px-5 py-4">
             <summary class="flex cursor-pointer items-center justify-between text-sm font-medium">
@@ -459,6 +384,7 @@
   </footer>
 
   <script src="/config.js"></script>
+  <script src="/js/api.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

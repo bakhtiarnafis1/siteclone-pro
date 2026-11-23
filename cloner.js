@@ -227,6 +227,22 @@ function normalizePageUrl(rawUrl, baseUrl) {
 /**
  * Parse Cookie input (supports Cookie-Editor JSON array or header string)
  */
+// Error with a machine-readable code (LOGIN_FAILED, ROBOTS_DISALLOWED, CANCELLED, INVALID_INPUT, BLOCKED)
+function codedError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+// Cookie-Editor exports sameSite as "no_restriction" | "lax" | "strict" | "unspecified"
+function normalizeSameSite(v) {
+  const s = String(v || '').toLowerCase();
+  if (s === 'strict') return 'Strict';
+  if (s === 'lax') return 'Lax';
+  if (s === 'none' || s === 'no_restriction') return 'None';
+  return null;
+}
+
 function parseUserCookies(cookieInput, targetUrl) {
   if (!cookieInput || !cookieInput.trim()) return [];
   const raw = cookieInput.trim();
@@ -246,9 +262,13 @@ function parseUserCookies(cookieInput, targetUrl) {
             secure: Boolean(c.secure ?? (u.protocol === 'https:')),
             httpOnly: Boolean(c.httpOnly ?? false),
           };
-          if (c.sameSite && ['Strict', 'Lax', 'None'].includes(c.sameSite)) {
-            cookie.sameSite = c.sameSite;
+          const sameSite = normalizeSameSite(c.sameSite);
+          if (sameSite) {
+            cookie.sameSite = sameSite;
+            if (sameSite === 'None') cookie.secure = true;
           }
+          const exp = Number(c.expirationDate ?? c.expires);
+          if (Number.isFinite(exp) && exp > 0 && !c.session) cookie.expires = Math.floor(exp);
           return cookie;
         });
     }
@@ -271,6 +291,85 @@ function parseUserCookies(cookieInput, targetUrl) {
       .filter(Boolean);
   }
   return [];
+}
+
+// "Cookie: a=1; b=2" header for a URL, using only cookies whose domain/path match it
+function buildCookieHeader(parsedCookies, targetUrl) {
+  if (!parsedCookies || parsedCookies.length === 0) return '';
+  try {
+    const u = new URL(targetUrl);
+    const host = u.hostname.toLowerCase();
+    return parsedCookies
+      .filter((c) => {
+        const d = String(c.domain || '').toLowerCase().replace(/^\./, '');
+        const domainOk = host === d || host.endsWith(`.${d}`);
+        const pathOk = !c.path || u.pathname.startsWith(c.path);
+        return domainOk && pathOk;
+      })
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ');
+  } catch {
+    return '';
+  }
+}
+
+// Minimal robots.txt support: rules for "User-agent: *" (Allow/Disallow, longest match wins, * and $ wildcards)
+async function loadRobotsRules(origin) {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch(`${origin}/robots.txt`, { signal: ctrl.signal, redirect: 'follow' });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    const text = (await res.text()).slice(0, 200000);
+    const rules = [];
+    let groupAgents = [];
+    let inRules = false;
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.replace(/#.*$/, '').trim();
+      if (!line) continue;
+      const idx = line.indexOf(':');
+      if (idx === -1) continue;
+      const key = line.slice(0, idx).trim().toLowerCase();
+      const value = line.slice(idx + 1).trim();
+      if (key === 'user-agent') {
+        if (inRules) {
+          groupAgents = [];
+          inRules = false;
+        }
+        groupAgents.push(value.toLowerCase());
+      } else if (key === 'allow' || key === 'disallow') {
+        inRules = true;
+        if (groupAgents.includes('*') && value) rules.push({ allow: key === 'allow', path: value });
+      }
+    }
+    return rules;
+  } catch {
+    return [];
+  }
+}
+
+function isAllowedByRobots(rules, targetUrl) {
+  if (!rules || rules.length === 0) return true;
+  let pathAndQuery;
+  try {
+    const u = new URL(targetUrl);
+    pathAndQuery = u.pathname + u.search;
+  } catch {
+    return true;
+  }
+  let best = null;
+  for (const rule of rules) {
+    const endAnchor = rule.path.endsWith('$');
+    const body = endAnchor ? rule.path.slice(0, -1) : rule.path;
+    const pattern = body.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+    if (new RegExp(`^${pattern}${endAnchor ? '$' : ''}`).test(pathAndQuery)) {
+      if (!best || rule.path.length > best.path.length || (rule.path.length === best.path.length && rule.allow)) {
+        best = rule;
+      }
+    }
+  }
+  return best ? best.allow : true;
 }
 
 /**
@@ -1514,7 +1613,16 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     saveAssets = true,
     sameDomain = true,
     cookies = '',
+    localStorageData = '', // JSON object from `copy(JSON.stringify(localStorage))` (Backend HTML UI mode)
+    extraUrls = '', // newline-separated extra pages/paths the crawl can't reach through links
+    stripScripts = false, // remove all JavaScript for a fully static copy
+    ignoreRobots = false, // false = respect the site's robots.txt
+    control = null, // { stopRequested, cancelled } set by the server for "Stop & download" / "Cancel"
   } = options;
+
+  const checkCancelled = () => {
+    if (control && control.cancelled) throw codedError('CANCELLED', 'Download cancelled.');
+  };
 
   // Enforce maximum pages limit (MAX_PAGES env, default 300)
   const maxPages =
@@ -1547,6 +1655,58 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
   const normalizedStart = normalizePageUrl(startUrl, startUrl) || startUrl;
   pageFileMap.set(normalizedStart, 'index.html');
   pageQueue.push(normalizedStart);
+
+  // Backend HTML UI (signed-in) mode: cookies and/or localStorage of the user's own session
+  const parsedSessionCookies = parseUserCookies(cookies, startUrl);
+  const authMode = mode === 'auth' || parsedSessionCookies.length > 0 || Boolean(String(localStorageData || '').trim());
+  const cookieHeaderFor = (targetUrl) => buildCookieHeader(parsedSessionCookies, targetUrl);
+  let localStorageEntries = null;
+  if (String(localStorageData || '').trim()) {
+    try {
+      const parsedLs = JSON.parse(localStorageData);
+      if (!parsedLs || typeof parsedLs !== 'object' || Array.isArray(parsedLs)) throw new Error('not an object');
+      localStorageEntries = {};
+      for (const [k, v] of Object.entries(parsedLs)) {
+        localStorageEntries[String(k)] = typeof v === 'string' ? v : JSON.stringify(v);
+      }
+    } catch {
+      throw codedError(
+        'INVALID_INPUT',
+        'The local storage data is not valid. Run copy(JSON.stringify(localStorage)) in the site’s console and paste the result.'
+      );
+    }
+  }
+
+  // Respect robots.txt unless the user (who is allowed to copy the site) ticked "Ignore robots.txt"
+  const robotsRules = ignoreRobots ? [] : await loadRobotsRules(rootOrigin);
+  if (!isAllowedByRobots(robotsRules, startUrl)) {
+    throw codedError(
+      'ROBOTS_DISALLOWED',
+      'This website’s robots.txt asks not to be copied automatically. If you are allowed to copy it, tick “Ignore robots.txt” and try again.'
+    );
+  }
+
+  // Extra pages (up to 50) that the crawl can't reach through links, e.g. screens opened by buttons
+  if (mode !== 'single' && String(extraUrls || '').trim()) {
+    const extras = String(extraUrls)
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .slice(0, 50);
+    for (const line of extras) {
+      const norm = normalizePageUrl(line, startUrl);
+      if (!norm) continue;
+      try {
+        if (new URL(norm).origin !== rootOrigin) continue;
+      } catch {
+        continue;
+      }
+      if (!pageQueue.includes(norm)) pageQueue.push(norm);
+    }
+  }
+  let stoppedEarly = false;
+  let loginFailed = false;
+  let budgetExceededFlag = false;
 
   // Store raw HTML & base URL for each captured page so we can rewrite all links after crawling
   const capturedPages = [];
@@ -1598,9 +1758,8 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       };
-      if (cookies && cookies.trim()) {
-        headers.Cookie = cookies.trim();
-      }
+      const assetCookie = cookieHeaderFor(assetUrl);
+      if (assetCookie) headers.Cookie = assetCookie;
       const res = await fetch(assetUrl, { headers, signal: controller.signal });
       clearTimeout(timer);
       if (!res.ok || !res.body) {
@@ -1729,20 +1888,47 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       }).observe(document.documentElement, { childList: true, subtree: true });
     });
 
-    // Inject session cookies if provided (Behind Login mode)
-    if (cookies && cookies.trim()) {
-      const parsedCookies = parseUserCookies(cookies, startUrl);
-      if (parsedCookies.length > 0) {
-        await context.addCookies(parsedCookies);
-        emitProgress({
-          pct: 8,
-          pages: 0,
-          assets: 0,
-          title: 'Session cookies injected…',
-          log: `Injected ${parsedCookies.length} session cookie(s) for authenticated capture`,
-          type: 'step',
-        });
+    // Inject the user's own session (Backend HTML UI mode): cookies + localStorage, used once, never stored
+    if (parsedSessionCookies.length > 0) {
+      try {
+        await context.addCookies(parsedSessionCookies);
+      } catch (cookieErr) {
+        throw codedError(
+          'INVALID_INPUT',
+          `The cookie export could not be used (${cookieErr.message}). In Cookie-Editor choose Export → JSON and paste again.`
+        );
       }
+      emitProgress({
+        pct: 8,
+        pages: 0,
+        assets: 0,
+        title: 'Signing in with your session…',
+        log: `Using ${parsedSessionCookies.length} cookie(s) from your export for the signed-in pages`,
+        type: 'step',
+      });
+    }
+    if (localStorageEntries) {
+      await context.addInitScript(
+        ({ origin, entries }) => {
+          try {
+            if (location.origin !== origin) return;
+            for (const [k, v] of Object.entries(entries)) {
+              if (localStorage.getItem(k) === null) localStorage.setItem(k, v);
+            }
+          } catch {}
+        },
+        { origin: rootOrigin, entries: localStorageEntries }
+      );
+      emitProgress({
+        pct: 8,
+        pages: 0,
+        assets: 0,
+        title: 'Signing in with your session…',
+        log: `Restoring ${Object.keys(localStorageEntries).length} local storage entr${
+          Object.keys(localStorageEntries).length === 1 ? 'y' : 'ies'
+        } on ${rootOrigin}`,
+        type: 'step',
+      });
     }
 
     // Raw captured HTML is spooled to disk (not kept in RAM) so 50-page jobs stay within 512MB containers
@@ -1818,8 +2004,22 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
 
     // Crawl loop (1 page for Single mode, up to 50 pages for Full / Auth mode)
     while (pageQueue.length > 0 && visitedPages.size < maxPages) {
+      checkCancelled();
+      if (control && control.stopRequested && capturedPages.length > 0) {
+        stoppedEarly = true;
+        emitProgress({
+          pct: 76,
+          pages: capturedPages.length,
+          assets: assetMap.size,
+          title: `Stopped — packaging ${capturedPages.length} saved page(s)…`,
+          log: `Stopped on request; zipping the ${capturedPages.length} page(s) saved so far.`,
+          type: 'warn',
+        });
+        break;
+      }
       if (visitedPages.size > 0 && Date.now() - crawlStartedAt > CRAWL_BUDGET_MS) {
         budgetExceeded = true;
+        budgetExceededFlag = true;
         emitProgress({
           pct: 76,
           pages: capturedPages.length,
@@ -1833,6 +2033,7 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
 
       const currentUrl = pageQueue.shift();
       if (!currentUrl || visitedPages.has(currentUrl)) continue;
+      if (visitedPages.size > 0 && !isAllowedByRobots(robotsRules, currentUrl)) continue;
 
       const pageIndex = visitedPages.size;
       visitedPages.add(currentUrl);
@@ -1868,6 +2069,31 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         // Wait for window 'load' / initial network burst, then for React/Next/Framer hydration
         await page.waitForLoadState('load', { timeout: isFirstPage ? 1400 : 800 }).catch(() => {});
         await page.waitForTimeout(isFirstPage ? 500 : 250);
+
+        // Signed-in mode: if the site bounced us to a login screen, the session did not work
+        if (authMode && isFirstPage) {
+          await page.waitForTimeout(1500);
+          const loginRe = /(^|[\/_.-])(login|log-in|signin|sign-in|sign_in|auth|sso|account\/login)([\/_.?#-]|$)/i;
+          const startPath = new URL(currentUrl).pathname;
+          const nowPath = (() => {
+            try {
+              return new URL(page.url()).pathname;
+            } catch {
+              return startPath;
+            }
+          })();
+          const redirectedToLogin = !loginRe.test(startPath) && loginRe.test(nowPath);
+          const showsPasswordForm =
+            !loginRe.test(startPath) &&
+            (await page
+              .locator('input[type="password"]:visible')
+              .count()
+              .catch(() => 0)) > 0;
+          if (redirectedToLogin || showsPasswordForm) {
+            loginFailed = true;
+            break;
+          }
+        }
 
         if (autoScroll) {
           emitProgress({
@@ -1956,7 +2182,8 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
         // probe Page 2 via HTTP fetch. If the site serves SSR/static HTML (WordPress, WooCommerce, Elementor, Next.js,
         // Framer, Webflow, Shopify, Astro, etc.), close Chromium immediately to free ~180MB RAM and crawl Pages 2..50
         // in parallel HTTP batches (10x faster and OOM-proof on 512MB containers!).
-        if (isFirstPage && maxPages > 1 && pageQueue.length > 0 && deferredBinaryUrls.size === 0) {
+        // (Not in signed-in mode: plain HTTP fetches would miss localStorage logins, so every page goes through Chromium)
+        if (!authMode && isFirstPage && maxPages > 1 && pageQueue.length > 0 && deferredBinaryUrls.size === 0) {
           try {
             const probeUrl = pageQueue[0];
             const probeHeaders = {
@@ -1964,7 +2191,8 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
               Accept: 'text/html,application/xhtml+xml',
             };
-            if (cookies && cookies.trim()) probeHeaders.Cookie = cookies.trim();
+            const probeCookie = cookieHeaderFor(probeUrl);
+            if (probeCookie) probeHeaders.Cookie = probeCookie;
             const probeCtrl = new AbortController();
             const probeTimer = setTimeout(() => probeCtrl.abort(), 8000);
             const probeRes = await fetch(probeUrl, { headers: probeHeaders, signal: probeCtrl.signal });
@@ -2016,7 +2244,8 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           Accept: 'text/html,application/xhtml+xml',
         };
-        if (cookies && cookies.trim()) headers.Cookie = cookies.trim();
+        const pageCookie = cookieHeaderFor(targetUrl);
+        if (pageCookie) headers.Cookie = pageCookie;
         const res = await fetch(targetUrl, { headers, signal: controller.signal });
         clearTimeout(timer);
         if (!res.ok) return;
@@ -2092,11 +2321,16 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     };
 
     while (pageQueue.length > 0 && visitedPages.size < maxPages) {
+      checkCancelled();
+      if (control && control.stopRequested) {
+        stoppedEarly = true;
+        break;
+      }
       const remainingNeeded = maxPages - visitedPages.size;
       const batch = [];
       while (batch.length < Math.min(6, remainingNeeded) && pageQueue.length > 0) {
         const nextUrl = pageQueue.shift();
-        if (nextUrl && !visitedPages.has(nextUrl)) {
+        if (nextUrl && !visitedPages.has(nextUrl) && isAllowedByRobots(robotsRules, nextUrl)) {
           batch.push(nextUrl);
         }
       }
@@ -2105,6 +2339,13 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     }
   }
 
+  checkCancelled();
+  if (loginFailed) {
+    throw codedError(
+      'LOGIN_FAILED',
+      'The cookies did not sign in — the website showed its login page. Sign in again in your browser, export fresh cookies with Cookie-Editor (Export → JSON) and try again.'
+    );
+  }
   if (capturedPages.length === 0) {
     throw new Error('Could not capture any page content from the target URL.');
   }
@@ -2505,21 +2746,44 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
       hasVfs = buildUniversalOfflineVfs(siteDir, assetMap, needsEsModuleBundle);
     }
 
-    // Patch final HTML files with VFS + Runtime Enhancer snippets via cheap marker replacement (no re-parse)
+    // Patch final HTML files with VFS + Runtime Enhancer snippets via cheap marker replacement (no re-parse).
+    // "Remove all JavaScript": strip every script, module preload and inline event handler instead.
     for (const pageItem of capturedPages) {
-      const parts = injectClonerRuntimeEnhancer(null, hasVfs, pageItem.deferredModuleEntries || []);
+      const parts = stripScripts
+        ? { vfsBootHead: '', runtimeCss: '', runtimeScript: '' }
+        : injectClonerRuntimeEnhancer(null, hasVfs, pageItem.deferredModuleEntries || []);
       const outHtmlPath = path.join(siteDir, pageItem.filename);
       try {
         const html = fs.readFileSync(outHtmlPath, 'utf8');
-        const patched = html
+        let patched = html
           .split('<!--CLONER_HEAD_TOP-->').join(parts.vfsBootHead)
           .split('<!--CLONER_HEAD_END-->').join(parts.runtimeCss)
           .split('<!--CLONER_BODY_END-->').join(parts.runtimeScript);
+        if (stripScripts) {
+          const $s = cheerio.load(patched);
+          $s('script, noscript').remove();
+          $s('link[rel="modulepreload"], link[as="script"], link[rel="preload"][as="fetch"]').remove();
+          $s('*').each((_, el) => {
+            for (const attr of Object.keys(el.attribs || {})) {
+              if (/^on/i.test(attr)) $s(el).removeAttr(attr);
+              else if (/^(href|src|action)$/i.test(attr) && /^\s*javascript:/i.test(el.attribs[attr])) {
+                $s(el).attr(attr, '#');
+              }
+            }
+          });
+          patched = $s.html();
+        }
         fs.writeFileSync(outHtmlPath, patched, 'utf8');
+      } catch {}
+    }
+    if (stripScripts) {
+      try {
+        fs.rmSync(path.join(siteDir, 'assets', 'js'), { recursive: true, force: true });
       } catch {}
     }
 
   // Step 4: Package everything into a clean ZIP archive
+  checkCancelled();
   emitProgress({
     pct: 96,
     pages: capturedPages.length,
@@ -2545,6 +2809,10 @@ async function runCloneJob(jobId, options, paths, emitProgress) {
     previewUrl: `/preview/${jobId}/index.html`,
     zipUrl: `/downloads/${jobId}.zip?url=${encodeURIComponent(startUrl)}`,
     createdAt: new Date().toISOString(),
+    stoppedEarly,
+    budgetExceeded: Boolean(budgetExceededFlag),
+    signedIn: authMode,
+    scriptsRemoved: Boolean(stripScripts),
   };
 
   emitProgress({
