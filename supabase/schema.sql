@@ -183,3 +183,11 @@ alter table public.profiles add column if not exists review_note text;
 alter table public.profiles add column if not exists signup_ip text;
 alter table public.profiles add column if not exists signup_user_agent text;
 insert into public.app_settings (key, value) values ('require_approval', 'true'::jsonb) on conflict (key) do nothing;
+
+-- ---------------------------------------------------------------- duplicate-account checks
+alter table public.profiles add column if not exists signup_device_id text;
+alter table public.profiles add column if not exists signup_fingerprint text;
+alter table public.profiles add column if not exists last_ip text;
+create index if not exists profiles_signup_ip_idx on public.profiles (signup_ip);
+create index if not exists profiles_device_idx on public.profiles (signup_device_id);
+insert into public.app_settings (key, value) values ('one_account_per_ip', 'true'::jsonb), ('one_account_per_device', 'true'::jsonb) on conflict (key) do nothing;

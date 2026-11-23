@@ -1449,6 +1449,8 @@
           <div class="space-y-3">
             <label class="flex items-center gap-3 text-sm"><input id="set-registration" type="checkbox" class="h-4 w-4" /><span>Anyone can create an account<span class="block text-xs text-dim">Untick to allow only accounts you create here.</span></span></label>
             <label class="flex items-center gap-3 text-sm"><input id="set-approval" type="checkbox" class="h-4 w-4" /><span>New sign-ups need my approval<span class="block text-xs text-dim">They wait on the Approvals page until you approve them.</span></span></label>
+            <label class="flex items-center gap-3 text-sm"><input id="set-one-ip" type="checkbox" class="h-4 w-4" /><span>One account per IP address<span class="block text-xs text-dim">Untick if genuine users share a network (offices, mobile data).</span></span></label>
+            <label class="flex items-center gap-3 text-sm"><input id="set-one-device" type="checkbox" class="h-4 w-4" /><span>One account per device<span class="block text-xs text-dim">Blocks a second sign-up from the same browser.</span></span></label>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <button class="btn-primary rounded-lg px-4 py-2 text-xs font-semibold">Save settings</button>
@@ -1607,6 +1609,8 @@
       $('#set-registration').checked = set.registrationOpen;
       $('#set-registration').disabled = set.registrationLockedByServer;
       $('#set-approval').checked = set.requireApproval;
+      $('#set-one-ip').checked = set.oneAccountPerIp;
+      $('#set-one-device').checked = set.oneAccountPerDevice;
       users = us.users;
       drawUsers();
       drawDownloads();
@@ -1656,7 +1660,7 @@
       e.preventDefault();
       try {
         const v = $('#set-default-limit').value.trim();
-        await api('/api/admin/settings', { method: 'PATCH', body: { defaultMonthlyLimit: v === '' ? null : parseInt(v, 10), registrationOpen: $('#set-registration').checked, requireApproval: $('#set-approval').checked } });
+        await api('/api/admin/settings', { method: 'PATCH', body: { defaultMonthlyLimit: v === '' ? null : parseInt(v, 10), registrationOpen: $('#set-registration').checked, requireApproval: $('#set-approval').checked, oneAccountPerIp: $('#set-one-ip').checked, oneAccountPerDevice: $('#set-one-device').checked } });
         flash($('#settings-msg'), 'Settings saved. New accounts get this limit.');
       } catch (err) {
         flash($('#settings-msg'), err.message, 'bad', 8000);
@@ -1813,12 +1817,46 @@
     icons();
     let filter = 'pending';
     let users = [];
+    const MATCH_LABEL = { ip: 'same IP', network: 'same network range', device: 'same device', browser: 'same browser fingerprint' };
+    const card = (u) => `<div class="card rounded-2xl p-5 ${u.related.length ? 'border-amber-300/30' : ''}" data-appr="${u.id}">`;
+    const relatedHtml = (u) =>
+      u.related.length
+        ? `<div class="mt-3 rounded-xl border border-amber-300/25 bg-amber-300/[0.06] p-3 text-xs">
+            <p class="flex items-center gap-1.5 font-semibold text-amber-200"><i data-lucide="alert-triangle" class="h-3.5 w-3.5"></i>Possible duplicate — linked to ${u.related.length} other account${u.related.length === 1 ? '' : 's'}</p>
+            <ul class="mt-2 space-y-1 text-body">${u.related
+              .map((r) => `<li class="flex flex-wrap items-center gap-x-2"><span class="text-white">${esc(r.email)}</span><span class="text-dim">(${esc(r.status)})</span>${r.match.map((m) => `<span class="badge bg-amber-300/10 text-amber-200">${MATCH_LABEL[m]}</span>`).join('')}</li>`)
+              .join('')}</ul></div>`
+        : '';
     const draw = () => {
-      const list = users.filter((u) => u.approvalStatus === filter);
+      const all = users.filter((u) => u.approvalStatus === filter);
+      // accounts linked by IP / device are shown together at the top
+      const flagged = all.filter((u) => u.related.length);
+      const clean = all.filter((u) => !u.related.length);
+      const groups = [];
+      const seen = new Set();
+      for (const u of flagged) {
+        if (seen.has(u.id)) continue;
+        const key = u.signupIp || u.signupDeviceId || u.id;
+        const members = flagged.filter((x) => !seen.has(x.id) && (x.id === u.id || x.related.some((r) => r.id === u.id) || (u.signupIp && x.signupIp === u.signupIp)));
+        members.forEach((m) => seen.add(m.id));
+        groups.push({ key, members });
+      }
+      const section = (title, sub, items) => `<div class="mb-2 mt-6 first:mt-0"><p class="text-sm font-semibold">${title}</p><p class="text-xs text-dim">${sub}</p></div>${items}`;
+      const render = (list) => list.map((u) => cardBody(u)).join('');
+      const list = all;
       $('#appr-list').innerHTML = list.length
-        ? list
-            .map(
-              (u) => `<div class="card rounded-2xl p-5" data-appr="${u.id}">
+        ? (groups.length
+            ? section('⚠ Possible duplicates', 'Requests that share an IP address, network, device or browser with another account.', groups
+                .map((g) => `<div class="rounded-2xl border border-amber-300/20 p-3"><p class="mb-2 px-1 text-xs text-amber-200">Group · ${esc(g.key.length > 20 ? 'device ' + g.key.slice(0, 8) + '…' : 'IP ' + g.key)} · ${g.members.length} request${g.members.length === 1 ? '' : 's'}</p><div class="space-y-3">${render(g.members)}</div></div>`)
+                .join('<div class="h-3"></div>'))
+            : '') +
+          (clean.length ? section(groups.length ? 'Other requests' : '', '', render(clean)) : '')
+        : '';
+      if (!list.length) return drawEmpty();
+      icons();
+    };
+    const cardBody = (u) =>
+              card(u) + `
                 <div class="flex flex-col gap-4 sm:flex-row sm:items-start">
                   <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent/20 text-base font-semibold text-accent-soft">${esc((u.name || u.email).charAt(0).toUpperCase())}</span>
                   <div class="min-w-0 flex-1">
@@ -1830,6 +1868,7 @@
                       <p><span class="text-dim">IP address:</span> ${esc(u.signupIp || '—')}</p>
                       <p class="truncate" title="${esc(u.signupUserAgent || '')}"><span class="text-dim">Device:</span> ${esc((u.signupUserAgent || '—').slice(0, 70))}</p>
                     </div>
+                    ${relatedHtml(u)}
                     ${u.approvalStatus === 'rejected' && u.reviewNote ? `<p class="mt-3 text-xs text-rose-300">Reason given: ${esc(u.reviewNote)}</p>` : ''}
                     ${u.approvalStatus === 'pending' ? `<input data-note type="text" maxlength="300" placeholder="Reason if you reject (optional — the user sees it)" class="field mt-4 py-2 text-xs" />` : ''}
                   </div>
@@ -1842,10 +1881,9 @@
                     }
                   </div>
                 </div>
-              </div>`
-            )
-            .join('')
-        : `<div class="card rounded-2xl px-6 py-12 text-center"><span class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/[0.04]"><i data-lucide="inbox" class="h-5 w-5 text-dim"></i></span>
+              </div>`;
+    const drawEmpty = () => {
+      $('#appr-list').innerHTML = `<div class="card rounded-2xl px-6 py-12 text-center"><span class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/[0.04]"><i data-lucide="inbox" class="h-5 w-5 text-dim"></i></span>
             <p class="mt-4 text-sm font-semibold">${filter === 'pending' ? 'No one is waiting' : 'No rejected sign-ups'}</p>
             <p class="mt-1 text-sm text-body">${filter === 'pending' ? 'New sign-ups will appear here automatically.' : ''}</p></div>`;
       icons();

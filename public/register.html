@@ -92,7 +92,7 @@
       btn.disabled = true;
       btnText.textContent = 'Creating account…';
       try {
-        const reg = await SC.api('/api/auth/register', { method: 'POST', body: { name, email, password, agree }, auth: false });
+        const reg = await SC.api('/api/auth/register', { method: 'POST', body: { name, email, password, agree, deviceId: SC.deviceId(), fingerprint: await SC.fingerprint() }, auth: false });
         btnText.textContent = 'Signing you in…';
         await SC.session.signIn(email, password);
         if (reg.pending) return location.replace('/pending');

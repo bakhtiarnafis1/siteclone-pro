@@ -38,6 +38,9 @@ const USER_MAP = {
     review_note: u.reviewNote || null,
     signup_ip: u.signupIp || null,
     signup_user_agent: u.signupUserAgent || null,
+    signup_device_id: u.signupDeviceId || null,
+    signup_fingerprint: u.signupFingerprint || null,
+    last_ip: u.lastIp || null,
   }),
   fromRow: (r) => ({
     id: r.id,
@@ -59,6 +62,9 @@ const USER_MAP = {
     reviewNote: r.review_note || '',
     signupIp: r.signup_ip || null,
     signupUserAgent: r.signup_user_agent || null,
+    signupDeviceId: r.signup_device_id || null,
+    signupFingerprint: r.signup_fingerprint || null,
+    lastIp: r.last_ip || null,
   }),
 };
 
@@ -244,7 +250,7 @@ function createStore() {
   };
 
   // ---- site-wide settings (app_settings table)
-  const settings = { default_monthly_limit: 10, registration_open: true, require_approval: true };
+  const settings = { default_monthly_limit: 10, registration_open: true, require_approval: true, one_account_per_ip: true, one_account_per_device: true };
   async function loadSettings() {
     const rows = await db.select('app_settings', 'select=key,value');
     for (const r of rows) settings[r.key] = r.value;

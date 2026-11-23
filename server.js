@@ -111,7 +111,30 @@ app.use('/api', (req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
-const ipOf = (req) => req.ip || req.socket?.remoteAddress || 'unknown';
+const ipOf = (req) =>
+  String(req.headers['cf-connecting-ip'] || req.headers['true-client-ip'] || req.ip || req.socket?.remoteAddress || 'unknown')
+    .split(',')[0]
+    .trim()
+    .replace(/^::ffff:/, '');
+const subnetOf = (ip) => (/^\d+\.\d+\.\d+\.\d+$/.test(ip || '') ? ip.split('.').slice(0, 3).join('.') : null);
+
+/** Other accounts that share an IP, network range, device or browser fingerprint with this one (admins ignored) */
+function relatedAccounts(target) {
+  const ips = new Set([target.signupIp, target.lastIp].filter(Boolean));
+  const subnets = new Set([...ips].map(subnetOf).filter(Boolean));
+  const out = [];
+  for (const u of store.users.all()) {
+    if (u.id === target.id || u.role === 'admin') continue;
+    const theirIps = [u.signupIp, u.lastIp].filter(Boolean);
+    const match = [];
+    if (theirIps.some((ip) => ips.has(ip))) match.push('ip');
+    else if (theirIps.some((ip) => subnets.has(subnetOf(ip)))) match.push('network');
+    if (target.signupDeviceId && u.signupDeviceId === target.signupDeviceId) match.push('device');
+    if (target.signupFingerprint && u.signupFingerprint === target.signupFingerprint) match.push('browser');
+    if (match.length) out.push({ id: u.id, email: u.email, name: u.name, status: u.approvalStatus || 'approved', match });
+  }
+  return out;
+}
 
 // Simple in-memory rate limit for sign-in / sign-up (per IP)
 const rateBuckets = new Map();
@@ -211,6 +234,17 @@ app.post('/api/auth/register', async (req, res) => {
   if (store.users.find((u) => u.email === normalized)) {
     return res.status(409).json({ success: false, error: 'An account with this email already exists. Log in instead.' });
   }
+  // one account per IP / device (admins are not counted)
+  const ip = ipOf(req);
+  const deviceId = String(req.body?.deviceId || '').slice(0, 64) || null;
+  const fingerprint = String(req.body?.fingerprint || '').slice(0, 64) || null;
+  const others = store.users.filter((u) => u.role !== 'admin');
+  if (store.settings.one_account_per_ip !== false && ip !== 'unknown' && others.some((u) => u.signupIp === ip || u.lastIp === ip)) {
+    return res.status(409).json({ success: false, code: 'DUPLICATE_NETWORK', error: 'An account has already been created from this network. Only one account per person is allowed — log in to your existing account, or contact support if you share this network with someone.' });
+  }
+  if (store.settings.one_account_per_device !== false && deviceId && others.some((u) => u.signupDeviceId === deviceId)) {
+    return res.status(409).json({ success: false, code: 'DUPLICATE_DEVICE', error: 'An account has already been created on this device. Log in to your existing account instead.' });
+  }
   try {
     // Created already confirmed (no email step); a database trigger adds the profile row
     const created = await sb.auth.admin.createUser({ email: normalized, password: String(password), name: String(name).trim().slice(0, 80) });
@@ -221,8 +255,10 @@ app.post('/api/auth/register', async (req, res) => {
         monthlyLimit: defaultMonthlyLimit(),
         approvalStatus: needsApproval ? 'pending' : 'approved',
         reviewedAt: needsApproval ? null : new Date().toISOString(),
-        signupIp: ipOf(req),
+        signupIp: ip,
         signupUserAgent: String(req.headers['user-agent'] || '').slice(0, 300),
+        signupDeviceId: deviceId,
+        signupFingerprint: fingerprint,
       });
       await store.flushAll();
     }
@@ -243,7 +279,7 @@ app.get('/api/auth/status', auth.requireAuthAnyStatus, (req, res) => {
 
 // Called by the browser right after it signs in with Supabase (records the login time)
 app.get('/api/auth/me', auth.requireAuth, (req, res) => {
-  if (req.query.login === '1') store.users.update(req.user.id, { lastLoginAt: new Date().toISOString() });
+  if (req.query.login === '1') store.users.update(req.user.id, { lastLoginAt: new Date().toISOString(), lastIp: ipOf(req) });
   res.json({ success: true, user: publicUser(req.user), allowance: allowanceFor(req.user) });
 });
 
@@ -1020,6 +1056,8 @@ app.get('/api/admin/settings', auth.requireAdmin, (req, res) => {
       registrationOpen: registrationOpen(),
       registrationLockedByServer: process.env.ALLOW_REGISTRATION === 'false',
       requireApproval: store.settings.require_approval !== false,
+      oneAccountPerIp: store.settings.one_account_per_ip !== false,
+      oneAccountPerDevice: store.settings.one_account_per_device !== false,
       maxPages: MAX_PAGES_LIMIT,
       maxJobsPerUser: MAX_JOBS_PER_USER,
       maxConcurrentJobs: MAX_CONCURRENT_JOBS,
@@ -1036,6 +1074,8 @@ app.patch('/api/admin/settings', auth.requireAdmin, async (req, res) => {
     }
     if ('registrationOpen' in b) await store.saveSetting('registration_open', Boolean(b.registrationOpen));
     if ('requireApproval' in b) await store.saveSetting('require_approval', Boolean(b.requireApproval));
+    if ('oneAccountPerIp' in b) await store.saveSetting('one_account_per_ip', Boolean(b.oneAccountPerIp));
+    if ('oneAccountPerDevice' in b) await store.saveSetting('one_account_per_device', Boolean(b.oneAccountPerDevice));
     if (b.applyDefaultToAll) {
       // give every normal user the default limit (admins stay unlimited)
       for (const u of store.users.all()) if (u.role !== 'admin') store.users.update(u.id, { monthlyLimit: defaultMonthlyLimit() });
@@ -1110,7 +1150,9 @@ app.get('/api/admin/approvals', auth.requireAdmin, async (req, res) => {
   try {
     await store.users.reload();
   } catch {}
-  const list = store.users.filter((u) => u.approvalStatus === 'pending' || u.approvalStatus === 'rejected').map(adminUserView);
+  const list = store.users
+    .filter((u) => u.approvalStatus === 'pending' || u.approvalStatus === 'rejected')
+    .map((u) => ({ ...adminUserView(u), lastIp: u.lastIp || null, related: relatedAccounts(u) }));
   res.json({ success: true, users: list });
 });
 app.post('/api/admin/users/:id/approval', auth.requireAdmin, (req, res) => {

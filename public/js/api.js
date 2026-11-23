@@ -152,5 +152,24 @@
     return `${(b / 1073741824).toFixed(2)} GB`;
   }
 
-  window.SC = { api, apiUrl, apiBase, session, sb, loginUrl, escapeHtml, formatBytes, friendlyAuthError };
+  // A random ID kept in this browser (survives IP changes) + a light browser fingerprint
+  function deviceId() {
+    let id = safeGet('sc_device');
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()).replace(/-/g, '');
+      safeSet('sc_device', id);
+    }
+    return id;
+  }
+  async function fingerprint() {
+    const parts = [navigator.userAgent, navigator.language, (navigator.languages || []).join(','), screen.width + 'x' + screen.height + 'x' + screen.colorDepth, Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.hardwareConcurrency, navigator.platform, devicePixelRatio];
+    try {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(parts.join('|')));
+      return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+    } catch {
+      return null;
+    }
+  }
+
+  window.SC = { deviceId, fingerprint, api, apiUrl, apiBase, session, sb, loginUrl, escapeHtml, formatBytes, friendlyAuthError };
 })();
