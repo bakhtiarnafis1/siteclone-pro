@@ -129,6 +129,16 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitStages)
 
 // ---------- Reveal sections as they scroll into view ----------
 const revealEls = document.querySelectorAll('.reveal');
+// cards in the same row come in one after another
+revealEls.forEach((el) => {
+  const sibs = [...el.parentElement.children].filter((c) => c.classList.contains('reveal'));
+  if (sibs.length > 1) el.style.transitionDelay = `${sibs.indexOf(el) * 90}ms`;
+});
+// hairline shadow under the nav once the page scrolls
+const navEl = document.querySelector('.site-nav');
+const onScroll = () => navEl && navEl.classList.toggle('scrolled', window.scrollY > 8);
+window.addEventListener('scroll', onScroll, { passive: true });
+onScroll();
 if ('IntersectionObserver' in window) {
   const io = new IntersectionObserver(
     (entries) =>
