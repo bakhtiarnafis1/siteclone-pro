@@ -1829,6 +1829,20 @@
         : '';
     const notes = {};
     const draw = () => {
+      // remember which reason box had the cursor (and where), so a redraw never interrupts typing
+      const act = document.activeElement;
+      const focusId = act && act.matches && act.matches('[data-note]') ? act.closest('[data-appr]')?.dataset.appr : null;
+      const caret = focusId ? [act.selectionStart, act.selectionEnd] : null;
+      setTimeout(() => {
+        if (!focusId) return;
+        const inp = document.querySelector(`[data-appr="${focusId}"] [data-note]`);
+        if (inp && document.activeElement !== inp) {
+          inp.focus();
+          try {
+            inp.setSelectionRange(caret[0], caret[1]);
+          } catch {}
+        }
+      }, 0);
       $$('[data-appr]').forEach((c) => {
         const inp = c.querySelector('[data-note]');
         if (inp) notes[c.dataset.appr] = inp.value;
@@ -1897,8 +1911,11 @@
             <p class="mt-1 text-sm text-body">${filter === 'pending' ? 'New sign-ups will appear here automatically.' : ''}</p></div>`;
       icons();
     };
+    let loading = null;
     const load = async () => {
-      users = (await api('/api/admin/approvals')).users || [];
+      if (loading) return loading;
+      loading = api('/api/admin/approvals').finally(() => setTimeout(() => (loading = null), 0));
+      users = (await loading).users || [];
       if (state.route === 'approvals') draw();
       refreshPendingBadge();
     };
