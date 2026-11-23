@@ -60,6 +60,73 @@ document.querySelectorAll('.js-clone-form').forEach((form) =>
   })
 );
 
+// ---------- Product preview: fit the 1180px dashboard mock-up to its frame ----------
+function fitStages() {
+  document.querySelectorAll('[data-stage]').forEach((vp) => {
+    const stage = vp.firstElementChild;
+    const scale = Math.min(1, vp.clientWidth / 1180);
+    stage.style.transform = `scale(${scale})`;
+    vp.style.height = `${Math.ceil(stage.offsetHeight * scale)}px`;
+  });
+}
+fitStages();
+window.addEventListener('resize', fitStages);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitStages);
+
+// ---------- Demo download animation (demo data only) ----------
+(function demoDownload() {
+  const roots = [...document.querySelectorAll('[data-demo-root]')];
+  if (!roots.length) return;
+  const TOTAL = 120;
+  const FOUND = 584;
+  const paths = [
+    '/catalogue/category/books/travel_2/index.html',
+    '/catalogue/a-light-in-the-attic_1000/index.html',
+    '/catalogue/category/books/mystery_3/index.html',
+    '/catalogue/tipping-the-velvet_999/index.html',
+    '/catalogue/category/books/poetry_23/index.html',
+    '/catalogue/soumission_998/index.html',
+    '/catalogue/category/books/history_32/index.html',
+    '/catalogue/sharp-objects_997/index.html',
+  ];
+  const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const set = (key, val) => roots.forEach((r) => r.querySelectorAll(`[data-demo="${key}"]`).forEach((el) => (el.textContent = val)));
+  const RING = 100.5;
+  let pct = 24;
+  let elapsed = 14;
+  function render() {
+    const saved = Math.min(TOTAL, Math.round((pct / 78) * TOTAL));
+    set('pct', Math.floor(pct));
+    set('saved', saved);
+    set('found', FOUND);
+    set('files', 90 + saved * 3);
+    set('elapsed', `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, '0')}`);
+    set('stage', pct < 78 ? `Capturing page ${Math.max(1, saved)} of ${TOTAL}…` : `Processing page ${Math.min(TOTAL, Math.round(((pct - 78) / 18) * TOTAL) + 1)} of ${TOTAL}…`);
+    set('log', `Captured ${paths[saved % paths.length]}`);
+    roots.forEach((r) => {
+      r.querySelectorAll('[data-demo="bar"]').forEach((el) => (el.style.width = `${pct}%`));
+      r.querySelectorAll('[data-demo="ring"]').forEach((el) => el.setAttribute('stroke-dashoffset', String(RING * (1 - pct / 100))));
+    });
+  }
+  render();
+  if (reduce) return;
+  setInterval(() => {
+    if (document.hidden) return;
+    elapsed += 1;
+    pct += pct < 78 ? 2.2 : 1.1;
+    if (pct >= 96) {
+      // start over quietly
+      pct = 22;
+      elapsed = 12;
+      roots.forEach((r) => r.querySelectorAll('[data-demo="bar"], [data-demo="ring"]').forEach((el) => (el.style.transition = 'none')));
+      render();
+      requestAnimationFrame(() => requestAnimationFrame(() => roots.forEach((r) => r.querySelectorAll('[data-demo="bar"], [data-demo="ring"]').forEach((el) => (el.style.transition = '')))));
+      return;
+    }
+    render();
+  }, 1000);
+})();
+
 // ---------- Reveal sections as they scroll into view ----------
 const revealEls = document.querySelectorAll('.reveal');
 if ('IntersectionObserver' in window) {

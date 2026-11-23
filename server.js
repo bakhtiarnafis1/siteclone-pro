@@ -602,7 +602,7 @@ app.post('/api/website-downloads', auth.requireAuth, (req, res) => {
     }
     const d = store.downloads.find((x) => x.id === id);
     if (!d) return;
-    if (d.status === 'running' && ((ev.pct || 0) >= 78 || /Processing|Rewriting|Creating ZIP|packaging/i.test(ev.title || ''))) {
+    if (d.status === 'running' && (ev.phase === 'process' || /Processing page|Rewriting|Creating ZIP|packaging|Saving the ZIP/i.test(ev.title || ''))) {
       patch.status = 'processing';
     }
     Object.assign(d, patch); // in-memory only while running; persisted at the end

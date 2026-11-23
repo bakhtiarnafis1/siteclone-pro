@@ -1714,7 +1714,17 @@ function formatBytes(bytes) {
 /**
  * Main Website Cloner Runner
  */
+// Runs a clone; timers the job starts are always stopped when it ends (success, error or cancel)
 async function runCloneJob(jobId, options, paths, rawEmitProgress) {
+  const timers = [];
+  try {
+    return await runCloneJobInner(timers, jobId, options, paths, rawEmitProgress);
+  } finally {
+    timers.forEach((t) => clearInterval(t));
+  }
+}
+
+async function runCloneJobInner(timers, jobId, options, paths, rawEmitProgress) {
   const {
     url: rawInputUrl,
     mode = 'single',
@@ -1773,11 +1783,88 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
   let sitemapCount = 0;
   const foundCount = () => Math.max(foundPages.size, sitemapCount);
   let lastFoundSent = 0;
+  // ---- Progress estimate --------------------------------------------------------------------
+  // The steps below send "legacy" percentages (crawl < 78, then 78–98 for processing / ZIP).
+  // Those don't match where the time actually goes (with 10 pages the crawl takes seconds and
+  // processing most of the run), so the real percentage is estimated from a time model of the
+  // whole job for this many pages, and advanced by elapsed time between events. Never goes back.
+  const jobStartedAt = Date.now();
+  let lastSavedCount = 0;
+  let lastSavedAt = jobStartedAt;
+  let lastPctSent = 0;
+  let inProcessing = false;
+  let capturedRef = null; // set once capturedPages exists
+  let authModeRef = false; // set once authMode is known
+  const U = { launch: 2, first: 6, fastPage: 0.35, browserPage: 5, proc: 0.5, rewrite: 3, finish: 0.05, zipFixed: 1, zip: 0.08 };
+  function estimatePct(legacyPct) {
+    const saved = capturedRef ? capturedRef.length : 0;
+    if (saved !== lastSavedCount) {
+      lastSavedCount = saved;
+      lastSavedAt = Date.now();
+    }
+    // pages this job will most likely end up with
+    let n = saved === 0 && !inProcessing ? maxPages : Math.min(maxPages, Math.max(saved, visitedPages.size + pageQueue.length));
+    if (inProcessing) n = Math.max(1, saved);
+    n = Math.max(1, n);
+    const perPage = pageQueue.__useFastHttpSubpages || !authModeRef ? U.fastPage : U.browserPage;
+    const crawl = U.launch + U.first + (n - 1) * perPage;
+    const proc = n * U.proc;
+    const finish = n * U.finish;
+    const zip = U.zipFixed + n * U.zip;
+    const total = crawl + proc + U.rewrite + finish + zip;
+    let done;
+    if (typeof legacyPct === 'number' && legacyPct >= 78) {
+      inProcessing = true;
+      const f = (lo, hi) => Math.max(0, Math.min(1, (legacyPct - lo) / (hi - lo)));
+      if (legacyPct < 86) done = crawl + f(78, 86) * proc;
+      else if (legacyPct < 91) done = crawl + proc + f(86, 91) * U.rewrite;
+      else if (legacyPct < 93) done = crawl + proc + U.rewrite + f(91, 93) * finish;
+      else done = crawl + proc + U.rewrite + finish + f(93, 98) * zip;
+    } else if (inProcessing) {
+      done = lastPctSent / 97.5 * total; // keep position (e.g. a log-only event)
+    } else if (saved === 0) {
+      // first page: opens the browser, loads, scrolls — advance by time up to 95 % of its share
+      const sec = (Date.now() - jobStartedAt) / 1000;
+      done = Math.min((U.launch + U.first) * 0.95, sec * 0.9);
+    } else {
+      const sinceLast = (Date.now() - lastSavedAt) / 1000;
+      done = U.launch + U.first + (saved - 1) * perPage + Math.min(perPage * 0.9, sinceLast * 0.6);
+    }
+    const pct = Math.round(Math.min(97.5, (done / total) * 97.5) * 10) / 10; // 98–100 = upload (server)
+    lastPctSent = Math.max(lastPctSent, pct);
+    return lastPctSent;
+  }
+  // The sent value follows the estimate at no more than ~7 % per second, so it never jumps
+  let shownPct = 0;
+  let shownAt = Date.now();
+  function smoothPct(target) {
+    const now = Date.now();
+    const dt = Math.min(1.2, Math.max(0, (now - shownAt) / 1000)); // a busy CPU must not turn into a jump
+    shownAt = now;
+    shownPct += Math.max(0, Math.min(target - shownPct, 7 * dt));
+    return Math.round(shownPct * 10) / 10;
+  }
   const emitProgress = (ev) => {
     const found = foundCount();
     lastFoundSent = found;
-    rawEmitProgress({ found, ...ev });
+    const out = { found, ...ev };
+    if (typeof ev.pct === 'number' || ev.tick) {
+      out.pct = smoothPct(estimatePct(ev.pct));
+      if (inProcessing) out.phase = 'process';
+    }
+    delete out.tick;
+    rawEmitProgress(out);
   };
+  // time-based updates between events (cleared when the job ends)
+  let tickerReady = false; // starts once the first page begins
+  const progressTicker = setInterval(() => {
+    if (!tickerReady || (control && control.cancelled)) return;
+    try {
+      emitProgress({ tick: true });
+    } catch {}
+  }, 900);
+  if (progressTicker.unref) progressTicker.unref();
+  timers.push(progressTicker);
   // Progress inside one phase: maps i/n onto [from, to] and sends at most ~3 updates per second
   let lastPhaseEmit = 0;
   const phaseProgress = (from, to, i, n, title, extra = {}) => {
@@ -1794,6 +1881,7 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
   // Backend HTML UI (signed-in) mode: cookies and/or localStorage of the user's own session
   const parsedSessionCookies = parseUserCookies(cookies, startUrl);
   const authMode = mode === 'auth' || parsedSessionCookies.length > 0 || Boolean(String(localStorageData || '').trim());
+  authModeRef = authMode;
   const cookieHeaderFor = (targetUrl) => buildCookieHeader(parsedSessionCookies, targetUrl);
   let localStorageEntries = null;
   if (String(localStorageData || '').trim()) {
@@ -1858,6 +1946,8 @@ async function runCloneJob(jobId, options, paths, rawEmitProgress) {
 
   // Store raw HTML & base URL for each captured page so we can rewrite all links after crawling
   const capturedPages = [];
+  capturedRef = capturedPages;
+  tickerReady = true;
 
   emitProgress({
     pct: 5,

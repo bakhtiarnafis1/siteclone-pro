@@ -251,9 +251,8 @@
       <svg viewBox="0 0 40 40" aria-hidden="true">
         <circle cx="20" cy="20" r="16" class="pring-track" />
         <circle cx="20" cy="20" r="16" class="pring-value" stroke-dasharray="${RING_C}" stroke-dashoffset="${RING_C * (1 - pct / 100)}" />
-        <circle cx="20" cy="20" r="19" class="pring-spin" />
       </svg>
-      <span class="pring-label" data-f="ring-pct">${d.status === 'queued' ? '' : pct}</span>
+      <span class="pring-icon"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i></span>
     </span>`;
   };
 
@@ -311,7 +310,7 @@
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start">
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="badge ${st.cls}">${active && d.status !== 'queued' ? '<span class="live-dot mr-0.5" style="width:6px;height:6px"></span>' : `<i data-lucide="${st.icon}" class="h-3.5 w-3.5"></i>`}${esc(label)}</span>
+            <span class="badge ${st.cls}">${active && d.status !== 'queued' ? '<i data-lucide="refresh-cw" class="spin h-3 w-3"></i>' : `<i data-lucide="${st.icon}" class="h-3.5 w-3.5"></i>`}${esc(label)}</span>
             <a href="${esc(d.url)}" target="_blank" rel="noopener noreferrer" class="min-w-0 max-w-full truncate text-[14px] font-semibold hover:underline">${esc(d.url)}</a>
             ${d.login_method ? `<span class="badge bg-white/[0.05] text-body"><i data-lucide="lock" class="h-3 w-3"></i>Signed in</span>` : ''}
             ${d.library_id ? `<span class="badge bg-accent/10 text-accent-soft"><i data-lucide="library" class="h-3 w-3"></i>In library</span>` : ''}
@@ -461,13 +460,13 @@
       d.status === 'processing'
         ? Math.min(a.target + (a.target < 93 ? 3 : 1.5), 99.6)
         : d.status === 'running'
-        ? Math.min(a.target + 7, 77)
+        ? Math.min(a.target + 2.5, 97.5) // the server sends a fresh time-based estimate about every second
         : a.target;
-    if (a.shown < a.target) a.shown = a.target;
   }
   setInterval(() => {
     for (const [id, a] of Object.entries(state.anim)) {
-      if (a.active && !a.waiting && a.shown < a.cap) a.shown += Math.max(0.04, (a.cap - a.shown) * 0.02);
+      if (a.shown < a.target) a.shown = Math.min(a.target, a.shown + 2); // catch up at most ~8 % per second
+      else if (a.active && !a.waiting && a.shown < a.cap) a.shown += Math.max(0.04, (a.cap - a.shown) * 0.02);
       $$(`li[data-dl-id="${id}"]`).forEach((li) => {
         const bar = li.querySelector('[data-f="bar"]');
         if (!bar) return;
@@ -477,8 +476,6 @@
         if (fill && fill.style.width !== `${w.toFixed(2)}%`) fill.style.width = `${w.toFixed(2)}%`;
         const ringVal = li.querySelector('[data-f="ring"] .pring-value');
         if (ringVal) ringVal.setAttribute('stroke-dashoffset', String(RING_C * (1 - (a.waiting ? 0 : a.shown) / 100)));
-        const ringPct = li.querySelector('[data-f="ring-pct"]');
-        if (ringPct && !a.waiting && ringPct.textContent !== String(Math.floor(a.shown))) ringPct.textContent = String(Math.floor(a.shown));
         const pctEl = li.querySelector('[data-f="pct"]');
         const p = String(Math.floor(a.waiting ? 0 : a.shown));
         if (pctEl && pctEl.textContent !== p) pctEl.textContent = p;

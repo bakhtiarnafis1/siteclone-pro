@@ -8,7 +8,6 @@
   <meta name="description" content="Download a website you own or may use as a ZIP of real HTML, CSS, JavaScript, fonts and images — one page, a whole site, or the dashboards behind your own login." />
   <meta property="og:title" content="SiteClone — Download any website as clean, working code" />
   <meta property="og:description" content="Real-browser capture, page discovery, live progress and a ZIP that works offline." />
-  <meta property="og:image" content="/img/product-history.jpg" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/js/tw-config.js"></script>
   <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
@@ -60,7 +59,7 @@
           <p id="mode-hint" class="mt-3 text-center text-[13px] text-slate-500">Just the page you enter — its links are not followed.</p>
 
           <div class="urlbar relative mt-4">
-            <i data-lucide="globe" class="pointer-events-none absolute left-[22px] top-[30px] h-4 w-4 -translate-y-1/2 text-slate-400 sm:top-1/2"></i>
+            <i data-lucide="globe" class="pointer-events-none absolute left-[22px] top-1/2 hidden h-4 w-4 -translate-y-1/2 text-slate-400 sm:block"></i>
             <label for="target-url" class="sr-only">Website address</label>
             <input id="target-url" name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="example.com" />
             <button id="submit-clone-btn" type="submit" class="btn btn-accent h-12 px-6 text-[15px]"><i data-lucide="download" class="h-4 w-4"></i><span id="submit-btn-text">Download</span></button>
@@ -72,11 +71,70 @@
           </div>
         </form>
 
-        <!-- real product -->
-        <div class="reveal mx-auto mt-16 max-w-5xl">
+        <!-- product preview (live HTML, demo data) -->
+        <div class="reveal mx-auto mt-16 max-w-[1120px]">
           <div class="frame">
-            <div class="frame-bar"><span class="frame-dots"><i></i><i></i><i></i></span><span class="frame-url">siteclone-pro-app.vercel.app/app#history</span><span class="w-[54px]"></span></div>
-            <img src="/img/product-history.jpg" width="2040" height="1290" alt="SiteClone dashboard: a full-website download at 52% with 584 pages found and 73 of 120 saved, above finished downloads ready as ZIP files" loading="eager" />
+            <div class="frame-bar"><span class="frame-dots"><i></i><i></i><i></i></span><span class="frame-url">siteclone.app/app#downloader</span><span class="w-[54px]"></span></div>
+            <div class="mk-viewport" data-stage>
+              <div class="mk-stage" data-demo-root>
+                <!-- sidebar -->
+                <aside class="mk-side">
+                  <div class="mk-brand"><span class="mk-logo"><i data-lucide="arrow-down-to-line"></i></span>SiteClone</div>
+                  <p class="mk-group">Overview</p>
+                  <div class="mk-nav"><i data-lucide="layout-dashboard"></i>Dashboard</div>
+                  <p class="mk-group">Create</p>
+                  <div class="mk-nav is-active"><i data-lucide="cloud-download"></i>Website Downloader<span class="mk-dot"></span></div>
+                  <div class="mk-nav"><i data-lucide="library"></i>Website Library</div>
+                  <p class="mk-group">Manage</p>
+                  <div class="mk-nav"><i data-lucide="history"></i>History</div>
+                  <div class="mk-nav"><i data-lucide="settings"></i>Settings</div>
+                  <div class="mk-credits">
+                    <p class="mk-group" style="margin:0">Downloads left</p>
+                    <p class="mk-credits-n">7<span> / 10</span></p>
+                    <div class="mk-credits-bar"><i style="width:70%"></i></div>
+                    <p class="mk-credits-p">Free plan · resets Dec 23</p>
+                  </div>
+                  <div class="mk-user"><span>D</span><div><b>Demo User</b><small>Free plan</small></div></div>
+                </aside>
+                <!-- main -->
+                <div class="mk-main">
+                  <div class="mk-h1"><span class="mk-h1-ic"><i data-lucide="cloud-download"></i></span>Website Downloader</div>
+                  <p class="mk-sub">Enter a website address and get a ZIP of its pages, ready to open offline.</p>
+
+                  <div class="mk-card mk-live">
+                    <div class="mk-row">
+                      <span class="mk-badge"><i data-lucide="refresh-cw" class="mk-spin"></i>Downloading</span>
+                      <b class="mk-url">https://books.toscrape.com/</b>
+                      <span class="mk-grow"></span>
+                      <span class="mk-ring"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="t"/><circle cx="20" cy="20" r="16" class="v" data-demo="ring" stroke-dasharray="100.5" stroke-dashoffset="60"/></svg><i data-lucide="refresh-cw" class="mk-spin"></i></span>
+                      <span class="mk-btn"><i data-lucide="circle-stop"></i>Stop &amp; download</span>
+                    </div>
+                    <p class="mk-meta">Today, 10:42 · Full website · up to 120 pages</p>
+                    <div class="mk-row mk-pctrow"><span class="mk-pct"><span data-demo="pct">38</span><small>%</small></span><span class="mk-stage-t" data-demo="stage">Capturing page 46 of 120…</span></div>
+                    <div class="mk-bar"><i data-demo="bar" style="width:38%"></i></div>
+                    <div class="mk-steps"><span class="d">Queued</span><span class="n">Crawling pages</span><span>Packing ZIP</span><span>Ready</span></div>
+                    <div class="mk-stats">
+                      <div><small>Pages found</small><b data-demo="found">584</b></div>
+                      <div><small>Pages saved</small><b><span data-demo="saved">46</span><em> / 120</em></b></div>
+                      <div><small>Files</small><b data-demo="files">212</b></div>
+                      <div><small>Elapsed</small><b data-demo="elapsed">0:21</b></div>
+                    </div>
+                    <p class="mk-log" data-demo="log">Captured /catalogue/category/books/travel_2/index.html</p>
+                  </div>
+
+                  <div class="mk-card mk-done">
+                    <div class="mk-row">
+                      <span class="mk-badge ok"><i data-lucide="check-circle-2"></i>Ready</span>
+                      <b class="mk-url">https://quotes.toscrape.com/</b>
+                      <span class="mk-grow"></span>
+                      <span class="mk-btn primary"><i data-lucide="download"></i>Download ZIP</span>
+                      <span class="mk-btn"><i data-lucide="eye"></i>Preview</span>
+                    </div>
+                    <p class="mk-facts"><span><i data-lucide="file-check-2"></i>10 pages saved</span><span><i data-lucide="radar"></i>47 found on the site</span><span><i data-lucide="file-archive"></i>562 KB</span><span><i data-lucide="hourglass"></i>Available for 24 h</span></p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -168,7 +226,7 @@
 
     <!-- ================= LIVE PROGRESS ================= -->
     <section class="section">
-      <div class="wrap grid grid-cols-1 items-center gap-14 lg:grid-cols-[0.9fr_1.1fr]">
+      <div class="wrap grid grid-cols-1 items-center gap-12 lg:grid-cols-[0.78fr_1.22fr] lg:gap-16">
         <div>
           <p class="kicker">Live progress</p>
           <h2 class="h2 mt-3">See the whole site before you commit to it</h2>
@@ -180,8 +238,27 @@
           </dl>
         </div>
         <div class="reveal">
-          <div class="frame">
-            <img src="/img/product-progress.jpg" width="2040" height="726" alt="A download card at 52% with a spinning progress ring, a Stop & download button, 584 pages found and 73 of 120 pages saved" loading="lazy" />
+          <div class="mk-panel" data-demo-root>
+            <div class="mk-card mk-live">
+              <div class="mk-row">
+                <span class="mk-badge"><i data-lucide="refresh-cw" class="mk-spin"></i>Downloading</span>
+                <b class="mk-url">https://books.toscrape.com/</b>
+                <span class="mk-grow"></span>
+                <span class="mk-ring"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="t"/><circle cx="20" cy="20" r="16" class="v" data-demo="ring" stroke-dasharray="100.5" stroke-dashoffset="60"/></svg><i data-lucide="refresh-cw" class="mk-spin"></i></span>
+                <span class="mk-btn"><i data-lucide="circle-stop"></i>Stop &amp; download</span>
+              </div>
+              <div class="mk-row mk-pctrow"><span class="mk-pct"><span data-demo="pct">38</span><small>%</small></span><span class="mk-stage-t" data-demo="stage">Capturing page 46 of 120…</span></div>
+              <div class="mk-bar"><i data-demo="bar" style="width:38%"></i></div>
+              <div class="mk-steps"><span class="d">Queued</span><span class="n">Crawling</span><span>Packing ZIP</span><span>Ready</span></div>
+              <div class="mk-stats">
+                <div><small>Pages found</small><b data-demo="found">584</b></div>
+                <div><small>Pages saved</small><b><span data-demo="saved">46</span><em> / 120</em></b></div>
+                <div><small>Files</small><b data-demo="files">212</b></div>
+                <div><small>Elapsed</small><b data-demo="elapsed">0:21</b></div>
+              </div>
+              <p class="mk-log" data-demo="log">Captured /catalogue/category/books/travel_2/index.html</p>
+            </div>
+            <div class="mk-note"><i data-lucide="info"></i>This site has 584 pages. Your limit saves the first 120 — choose a higher limit to save more.</div>
           </div>
         </div>
       </div>
@@ -328,7 +405,7 @@
           <p class="lead mt-4">Free account, ten downloads a month, no card needed.</p>
           <form class="js-clone-form mx-auto mt-9 max-w-xl text-left" novalidate>
             <div class="urlbar relative">
-              <i data-lucide="globe" class="pointer-events-none absolute left-[22px] top-[30px] h-4 w-4 -translate-y-1/2 text-slate-400 sm:top-1/2"></i>
+              <i data-lucide="globe" class="pointer-events-none absolute left-[22px] top-1/2 hidden h-4 w-4 -translate-y-1/2 text-slate-400 sm:block"></i>
               <input name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="example.com" aria-label="Website address" />
               <button type="submit" class="btn btn-accent h-12 px-6 text-[15px]"><i data-lucide="download" class="h-4 w-4"></i>Download</button>
             </div>
